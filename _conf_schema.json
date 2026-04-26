@@ -21,23 +21,15 @@
     "description": "下载配置",
     "type": "object",
     "items": {
-      "download_format": {
-        "description": "默认下载格式",
-        "type": "string",
-        "default": "epub",
-        "options": [
-          "epub",
-          "txt"
-        ]
-      },
-      "naming_mode": {
-        "description": "文件命名方式",
+      "file_naming_mode": {
+        "description": "发送文件的命名方式",
         "type": "string",
         "default": "book_name",
         "options": [
           "book_name",
-          "number"
-        ]
+          "book_id"
+        ],
+        "hint": "book_name 使用书籍名作为文件名，book_id 使用 ESJ 书籍编号作为文件名。"
       },
       "use_book_dir": {
         "description": "是否为每本书创建独立目录",
@@ -83,4 +75,3 @@
     }
   }
 }
-

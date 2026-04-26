@@ -47,18 +47,23 @@ class EsjzoneDownloadService:
             self._client = None
 
     async def validate_cookie(self) -> str | None:
+        logger.info("[ESJ] validating saved cookie")
         response = await self._request(f"{ESJ_BASE_URL}/my/profile.html")
         html = response.text
         if "window.location.href='/my/login';" in html:
             client = await self._get_client()
             client.cookies.clear()
             await self._save_cookies()
+            logger.info("[ESJ] saved cookie is invalid and has been cleared")
             return None
 
         soup = BeautifulSoup(html, "html.parser")
         user_name_tag = soup.find("h6", class_="user-name")
         if user_name_tag:
-            return user_name_tag.get_text(strip=True)
+            username = user_name_tag.get_text(strip=True)
+            logger.info(f"[ESJ] cookie validated for user: {username}")
+            return username
+        logger.info("[ESJ] cookie validation did not find a logged-in user")
         return None
 
     async def login(self, email: str | None = None, password: str | None = None) -> str:
@@ -68,6 +73,7 @@ class EsjzoneDownloadService:
         if not email or not password:
             raise ValueError("未配置 ESJ Zone 账号或密码。")
 
+        logger.info(f"[ESJ] login started for account: {_mask_account(email)}")
         headers = {
             "X-Requested-With": "XMLHttpRequest",
             "Origin": ESJ_BASE_URL,
@@ -85,24 +91,38 @@ class EsjzoneDownloadService:
         if not username:
             raise ValueError("登录请求完成，但 Cookie 校验失败。")
         await self._save_cookies()
+        logger.info(f"[ESJ] login succeeded for user: {username}")
         return username
 
     async def get_book_info(self, url: str) -> Book:
-        response = await self._request(self._normalize_url(url))
-        return parse_book(response.text, self._normalize_url(url))
+        normalized_url = self.normalize_url(url)
+        logger.info(f"[ESJ] fetching book info: {normalized_url}")
+        response = await self._request(normalized_url)
+        book = parse_book(response.text, normalized_url)
+        logger.info(
+            f"[ESJ] parsed book info: {book.title}, chapters={len(book.chapters)}"
+        )
+        return book
 
     async def get_novel_status(self, url: str) -> dict[str, str]:
-        normalized_url = self._normalize_url(url)
+        normalized_url = self.normalize_url(url)
+        logger.info(f"[ESJ] checking novel status: {normalized_url}")
         response = await self._request(normalized_url)
-        return parse_novel_status(response.text, normalized_url)
+        status = parse_novel_status(response.text, normalized_url)
+        logger.info(
+            f"[ESJ] status parsed: {status.get('title')}, "
+            f"latest={status.get('latest_chapter')}"
+        )
+        return status
 
     async def get_favorites(
-        self, page: int = 1, sort_by: str = "new"
+        self, page: int = 1, sort_by: str = "lastest"
     ) -> tuple[list[dict[str, str]], int]:
         page = max(page, 1)
-        sort_by = "favor" if sort_by == "favor" else "new"
+        sort_by = self._normalize_favorite_sort(sort_by)
+        logger.info(f"[ESJ] fetching favorites: sort={sort_by}, page={page}")
         client = await self._get_client()
-        if sort_by == "new":
+        if sort_by == "lastest":
             client.cookies.set("favorite_sort", "udate", domain="www.esjzone.one")
             url = f"{ESJ_BASE_URL}/my/favorite/udate/{page}"
         else:
@@ -110,7 +130,12 @@ class EsjzoneDownloadService:
             url = f"{ESJ_BASE_URL}/my/favorite/{page}"
 
         response = await self._request(url)
-        return parse_favorites(response.text)
+        novels, total_pages = parse_favorites(response.text)
+        logger.info(
+            f"[ESJ] favorites parsed: sort={sort_by}, page={page}, "
+            f"items={len(novels)}, total_pages={total_pages}"
+        )
+        return novels, total_pages
 
     async def download_book(
         self,
@@ -119,25 +144,35 @@ class EsjzoneDownloadService:
         start_chapter: int | None = None,
         end_chapter: int | None = None,
     ) -> DownloadResult:
-        fmt = (fmt or self._download_config().get("download_format") or "epub").lower()
+        fmt = (fmt or "epub").lower()
         if fmt not in {"epub", "txt"}:
             raise ValueError("下载格式只支持 epub 或 txt。")
 
+        normalized_url = self.normalize_url(url)
+        logger.info(
+            f"[ESJ] download started: url={normalized_url}, format={fmt}, "
+            f"start={start_chapter or 'first'}, end={end_chapter or 'last'}"
+        )
         download_images = fmt == "epub" and self._download_images()
         book, selected_chapters, image_count = await self._fetch_book(
-            url=url,
+            url=normalized_url,
             start_chapter=start_chapter,
             end_chapter=end_chapter,
             download_images=download_images,
         )
 
-        output_path = self._resolve_output_path(book, url, fmt)
+        output_path = self._resolve_output_path(book, normalized_url, fmt)
         if fmt == "epub":
             intro_chapter = self._build_intro_chapter(book, selected_chapters)
             build_epub(book, [intro_chapter, *selected_chapters], output_path)
         else:
             self._write_txt(book, selected_chapters, output_path)
 
+        logger.info(
+            f"[ESJ] download finished: {book.title}, "
+            f"chapters={len(selected_chapters)}, images={image_count}, "
+            f"path={output_path}"
+        )
         return DownloadResult(
             book=book,
             output_path=output_path,
@@ -152,10 +187,13 @@ class EsjzoneDownloadService:
         end_chapter: int | None,
         download_images: bool,
     ) -> tuple[Book, list[Chapter], int]:
-        normalized_url = self._normalize_url(url)
+        normalized_url = self.normalize_url(url)
         response = await self._request(normalized_url)
         book = parse_book(response.text, normalized_url)
         selected_chapters = self._select_chapters(book, start_chapter, end_chapter)
+        logger.info(
+            f"[ESJ] selected chapters: book={book.title}, count={len(selected_chapters)}"
+        )
 
         if download_images and book.cover_url:
             try:
@@ -244,6 +282,9 @@ class EsjzoneDownloadService:
         last_exc: Exception | None = None
         for attempt in range(retries + 1):
             try:
+                logger.debug(
+                    f"[ESJ] request {method} {url}, attempt={attempt + 1}/{retries + 1}"
+                )
                 response = await client.request(
                     method,
                     url,
@@ -257,8 +298,13 @@ class EsjzoneDownloadService:
                 if attempt >= retries:
                     break
                 delay = retry_delays[min(attempt, len(retry_delays) - 1)]
+                logger.warning(
+                    f"[ESJ] request failed and will retry in {delay}s: "
+                    f"{method} {url}, error={exc}"
+                )
                 await asyncio.sleep(delay)
         assert last_exc is not None
+        logger.warning(f"[ESJ] request failed permanently: {method} {url}, {last_exc}")
         raise last_exc
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -277,6 +323,7 @@ class EsjzoneDownloadService:
                 },
             )
             await self._load_cookies()
+            logger.info("[ESJ] HTTP client initialized")
         return self._client
 
     async def _load_cookies(self) -> None:
@@ -299,6 +346,7 @@ class EsjzoneDownloadService:
                     domain=cookie.get("domain") or "www.esjzone.one",
                     path=cookie.get("path") or "/",
                 )
+            logger.info(f"[ESJ] loaded {len(data)} cookies from {self.cookies_path}")
         except Exception as exc:
             logger.warning(f"[ESJ] failed to load cookies: {exc}")
 
@@ -318,6 +366,7 @@ class EsjzoneDownloadService:
             json.dumps(cookies, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        logger.info(f"[ESJ] saved {len(cookies)} cookies to {self.cookies_path}")
 
     def _select_chapters(
         self,
@@ -430,7 +479,7 @@ class EsjzoneDownloadService:
         filename = self._filename_for(book, url, fmt)
         use_book_dir = _bool(download_config.get("use_book_dir"), True)
         if use_book_dir:
-            book_id = self._book_id(url)
+            book_id = self.book_id(url)
             base_dir = self.downloads_dir / book_id
         else:
             base_dir = self.downloads_dir
@@ -438,21 +487,28 @@ class EsjzoneDownloadService:
         return base_dir / filename
 
     def _filename_for(self, book: Book, url: str, fmt: str) -> str:
-        naming_mode = str(self._download_config().get("naming_mode") or "book_name")
-        if naming_mode == "number":
-            stem = self._book_id(url)
+        download_config = self._download_config()
+        naming_mode = str(
+            download_config.get("file_naming_mode")
+            or download_config.get("naming_mode")
+            or "book_name"
+        )
+        if naming_mode in {"number", "book_id"}:
+            stem = self.book_id(url)
         else:
-            stem = _sanitize_filename(book.title) or self._book_id(url)
+            stem = _sanitize_filename(book.title) or self.book_id(url)
         return f"{stem}.{fmt}"
 
-    def _normalize_url(self, url: str) -> str:
+    def normalize_url(self, url: str) -> str:
         cleaned = url.strip()
         if not cleaned:
             raise ValueError("URL 不能为空。")
+        if re.fullmatch(r"\d+", cleaned):
+            return f"{ESJ_BASE_URL}/detail/{cleaned}.html"
         return urljoin(ESJ_BASE_URL, cleaned)
 
-    def _book_id(self, url: str) -> str:
-        return self._normalize_url(url).rstrip("/").split("/")[-1].replace(".html", "")
+    def book_id(self, url: str) -> str:
+        return self.normalize_url(url).rstrip("/").split("/")[-1].replace(".html", "")
 
     def _account_config(self) -> dict[str, Any]:
         account = self.config.get("account", {})
@@ -461,6 +517,14 @@ class EsjzoneDownloadService:
     def _download_config(self) -> dict[str, Any]:
         download = self.config.get("download", {})
         return download if isinstance(download, dict) else {}
+
+    def _normalize_favorite_sort(self, sort_by: str) -> str:
+        normalized = (sort_by or "lastest").strip().lower()
+        if normalized in {"lastest", "latest", "new", "udate", "update"}:
+            return "lastest"
+        if normalized in {"favor", "favorite", "collect", "collected"}:
+            return "collected"
+        raise ValueError("收藏排序只支持 lastest 或 collected。")
 
     def _timeout(self) -> float:
         return _safe_float(self._download_config().get("timeout_seconds"), 180.0, 5.0)
@@ -504,6 +568,13 @@ def _normalize_image_bytes(raw: bytes, filename: str) -> bytes:
 
 def _sanitize_filename(filename: str) -> str:
     return re.sub(r'[\\/*?:"<>|]', "", filename).strip()
+
+
+def _mask_account(account: str) -> str:
+    if "@" in account:
+        name, domain = account.split("@", 1)
+        return f"{name[:2]}***@{domain}"
+    return f"{account[:2]}***"
 
 
 def _safe_int(value: Any, default: int, minimum: int | None = None) -> int:

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import File, Plain
+from astrbot.api.message_components import File, Node, Nodes, Plain
 from astrbot.api.star import Context, Star, register
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
@@ -43,39 +43,47 @@ class EsjzoneDownloaderPlugin(Star):
             "\n".join(
                 [
                     "ESJ Zone 小说下载",
-                    "/esj info <小说URL> - 查看书籍与章节信息",
-                    "/esj download <小说URL> [epub|txt] [起始章节] [结束章节] - 下载并发送文件",
-                    "/esj check <小说URL> - 查看最近更新状态",
+                    "/esj info <小说URL或编号> - 查看书籍简介",
+                    "/esj download <小说URL或编号> [epub|txt] [起始章节] [结束章节] - 下载并发送文件",
+                    "/esj check <小说URL或编号> - 查看最近更新状态",
                     "/esj login <邮箱> <密码> - 登录并保存 Cookie",
-                    "/esj fav [new|favor] [页码] - 查看收藏列表",
-                    "示例：/esj download https://www.esjzone.one/detail/123.html epub 1 20",
+                    "/esj fav [lastest|collected] [页码] - 查看收藏列表",
+                    "示例：/esj download 123",
+                    "示例：/esj download 123 1 20",
                 ]
             )
         )
 
     @esj.command("info")
     async def info(self, event: AstrMessageEvent, url: str):
-        """查看 ESJ Zone 小说基本信息。"""
+        """查看 ESJ Zone 小说简介。"""
         try:
+            logger.info(f"[ESJ] info command from {event.unified_msg_origin}: {url}")
             book = await self.service.get_book_info(url)
-            preview = "\n".join(
-                f"{chapter.index}. {chapter.title}" for chapter in book.chapters[:10]
-            )
-            if len(book.chapters) > 10:
-                preview += f"\n... 共 {len(book.chapters)} 章"
-            yield event.plain_result(
-                "\n".join(
-                    [
-                        f"标题：{book.title}",
-                        f"作者：{book.author}",
-                        f"最近更新：{book.update_time or '未知'}",
-                        f"章节数：{len(book.chapters)}",
-                        f"标签：{', '.join(book.tags) if book.tags else '无'}",
-                        "",
-                        preview or "未解析到章节。",
-                    ]
+            book_id = self.service.book_id(book.url)
+            nodes = [
+                self._node(
+                    event,
+                    "\n".join(
+                        [
+                            f"标题：{book.title}",
+                            f"编号：{book_id}",
+                            f"作者：{book.author}",
+                            f"最近更新：{book.update_time or '未知'}",
+                            f"章节数：{len(book.chapters)}",
+                            f"标签：{', '.join(book.tags) if book.tags else '无'}",
+                        ]
+                    ),
                 )
+            ]
+            intro = book.introduction.strip() or "暂无简介。"
+            for idx, chunk in enumerate(_split_text(intro), start=1):
+                title = "简介" if idx == 1 else f"简介（续 {idx}）"
+                nodes.append(self._node(event, f"{title}\n\n{chunk}"))
+            logger.info(
+                f"[ESJ] info command succeeded: {book.title}, chapters={len(book.chapters)}"
             )
+            yield event.chain_result([Nodes(nodes)])
         except Exception as exc:
             logger.warning(f"[ESJ] info failed: {exc}")
             yield event.plain_result(f"获取书籍信息失败：{exc}")
@@ -84,6 +92,7 @@ class EsjzoneDownloaderPlugin(Star):
     async def check(self, event: AstrMessageEvent, url: str):
         """查看 ESJ Zone 小说最近更新状态。"""
         try:
+            logger.info(f"[ESJ] check command from {event.unified_msg_origin}: {url}")
             status = await self.service.get_novel_status(url)
             yield event.plain_result(
                 "\n".join(
@@ -113,14 +122,27 @@ class EsjzoneDownloaderPlugin(Star):
             yield event.plain_result("已有下载任务正在执行，请稍后再试。")
             return
 
-        yield event.plain_result("已开始下载，章节较多时可能需要几分钟。")
-        async with self._download_lock:
-            try:
+        try:
+            fmt, start, end = _normalize_download_args(fmt, start, end)
+            normalized_url = self.service.normalize_url(url)
+            logger.info(
+                f"[ESJ] download command from {event.unified_msg_origin}: "
+                f"url={normalized_url}, format={fmt}, start={start or 'first'}, "
+                f"end={end or 'last'}"
+            )
+            yield event.plain_result(
+                f"已开始下载 {fmt.upper()}，章节较多时可能需要几分钟。"
+            )
+            async with self._download_lock:
                 result = await self.service.download_book(
                     url=url,
-                    fmt=fmt or None,
+                    fmt=fmt,
                     start_chapter=start or None,
                     end_chapter=end or None,
+                )
+                logger.info(
+                    f"[ESJ] download command succeeded: {result.book.title}, "
+                    f"path={result.output_path}"
                 )
                 yield event.chain_result(
                     [
@@ -134,14 +156,15 @@ class EsjzoneDownloaderPlugin(Star):
                         ),
                     ]
                 )
-            except Exception as exc:
-                logger.warning(f"[ESJ] download failed: {exc}")
-                yield event.plain_result(f"下载失败：{exc}")
+        except Exception as exc:
+            logger.warning(f"[ESJ] download failed: {exc}")
+            yield event.plain_result(f"下载失败：{exc}")
 
     @esj.command("login")
     async def login(self, event: AstrMessageEvent, email: str = "", password: str = ""):
         """登录 ESJ Zone 并保存 Cookie。"""
         try:
+            logger.info(f"[ESJ] login command from {event.unified_msg_origin}")
             username = await self.service.login(email or None, password or None)
             yield event.plain_result(f"登录成功：{username}")
         except Exception as exc:
@@ -152,24 +175,94 @@ class EsjzoneDownloaderPlugin(Star):
     async def favorites(
         self,
         event: AstrMessageEvent,
-        sort_by: str = "new",
+        sort_by: str = "lastest",
         page: int = 1,
     ):
         """查看 ESJ Zone 收藏列表。"""
         try:
+            if sort_by.isdigit():
+                page = int(sort_by)
+                sort_by = "lastest"
+            logger.info(
+                f"[ESJ] favorites command from {event.unified_msg_origin}: "
+                f"sort={sort_by}, page={page}"
+            )
             novels, total_pages = await self.service.get_favorites(page, sort_by)
             if not novels:
                 yield event.plain_result("收藏列表为空，或当前登录状态无效。")
                 return
-            lines = [f"收藏列表 第 {page}/{total_pages} 页："]
-            for idx, novel in enumerate(novels[:10], start=1):
-                lines.append(
-                    f"{idx}. {novel.get('title', '未知标题')}\n"
-                    f"   最新：{novel.get('latest_chapter') or '未知'}\n"
-                    f"   更新：{novel.get('update_time') or '未知'}\n"
-                    f"   {novel.get('url') or ''}"
+            nodes = [
+                self._node(
+                    event,
+                    f"收藏列表\n排序：{sort_by}\n页码：{page}/{total_pages}\n数量：{len(novels)}",
                 )
-            yield event.plain_result("\n".join(lines))
+            ]
+            for idx, novel in enumerate(novels[:10], start=1):
+                book_id = self._safe_book_id(novel.get("url") or "")
+                nodes.append(
+                    self._node(
+                        event,
+                        "\n".join(
+                            [
+                                f"{idx}. {novel.get('title', '未知标题')}",
+                                f"编号：{book_id}",
+                                f"最新：{novel.get('latest_chapter') or '未知'}",
+                                f"更新：{novel.get('update_time') or '未知'}",
+                                f"上次观看：{novel.get('last_viewed') or '未知'}",
+                            ]
+                        ),
+                    )
+                )
+            logger.info(
+                f"[ESJ] favorites command succeeded: sort={sort_by}, "
+                f"page={page}, items={len(novels)}"
+            )
+            yield event.chain_result([Nodes(nodes)])
         except Exception as exc:
             logger.warning(f"[ESJ] favorites failed: {exc}")
             yield event.plain_result(f"获取收藏列表失败：{exc}")
+
+    def _node(self, event: AstrMessageEvent, text: str) -> Node:
+        return Node(
+            uin=event.get_self_id() or event.get_sender_id() or "0",
+            name="ESJ Zone",
+            content=[Plain(text)],
+        )
+
+    def _safe_book_id(self, url: str) -> str:
+        try:
+            return self.service.book_id(url)
+        except Exception:
+            return "未知"
+
+
+def _normalize_download_args(fmt: str, start: int, end: int) -> tuple[str, int, int]:
+    fmt = (fmt or "").strip().lower()
+    if not fmt:
+        return "epub", start, end
+    if fmt in {"epub", "txt"}:
+        return fmt, start, end
+    if fmt.isdigit():
+        return "epub", int(fmt), start
+    raise ValueError("下载格式只支持 epub 或 txt。")
+
+
+def _split_text(text: str, limit: int = 1500) -> list[str]:
+    if len(text) <= limit:
+        return [text]
+    chunks: list[str] = []
+    current = ""
+    for line in text.splitlines():
+        candidate = f"{current}\n{line}".strip() if current else line
+        if len(candidate) <= limit:
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+        while len(line) > limit:
+            chunks.append(line[:limit])
+            line = line[limit:]
+        current = line
+    if current:
+        chunks.append(current)
+    return chunks
