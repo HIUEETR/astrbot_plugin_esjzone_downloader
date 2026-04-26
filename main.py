@@ -43,13 +43,18 @@ class EsjzoneDownloaderPlugin(Star):
             "\n".join(
                 [
                     "ESJ Zone 小说下载",
-                    "/esj info <小说URL或编号> - 查看书籍简介",
-                    "/esj download <小说URL或编号> [epub|txt] [起始章节] [结束章节] - 下载并发送文件",
+                    "/esj info <小说URL或编号> - 合并转发书籍简介、编号和章节数",
+                    "/esj fav [lastest|collected] [页码] - 合并转发收藏列表，默认 lastest",
                     "/esj check <小说URL或编号> - 查看最近更新状态",
+                    "/esj download <小说URL或编号> [epub|txt] [起始章节] [结束章节] - 下载并发送文件",
                     "/esj login <邮箱> <密码> - 登录并保存 Cookie",
-                    "/esj fav [lastest|collected] [页码] - 查看收藏列表",
+                    "",
+                    "下载未指定格式时默认 EPUB；也支持省略格式直接写章节范围。",
                     "示例：/esj download 123",
                     "示例：/esj download 123 1 20",
+                    "示例：/esj download 123 txt",
+                    "",
+                    "配置项 file_naming_mode 可控制发送文件名：book_name 或 book_id。",
                 ]
             )
         )
