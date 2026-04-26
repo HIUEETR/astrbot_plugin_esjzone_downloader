@@ -1,0 +1,10 @@
+name: astrbot_plugin_esjzone_downloader
+display_name: ESJ Zone 小说下载器
+desc: ESJ Zone 小说下载插件，支持解析信息、下载 EPUB/TXT，并在 QQ 平台发送文件。
+help: 使用 /esj help 查看命令。
+version: v1.0.0
+author: HIUEETR
+repo: ""
+support_platforms:
+  - aiocqhttp
+

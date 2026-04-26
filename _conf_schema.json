@@ -1,0 +1,86 @@
+{
+  "account": {
+    "description": "ESJ Zone 账号配置",
+    "type": "object",
+    "items": {
+      "username": {
+        "description": "登录邮箱",
+        "type": "string",
+        "default": ""
+      },
+      "password": {
+        "description": "登录密码",
+        "type": "string",
+        "default": "",
+        "obvious_hint": true,
+        "hint": "也可以通过 /esj login 邮箱 密码 登录并只保存 Cookie。"
+      }
+    }
+  },
+  "download": {
+    "description": "下载配置",
+    "type": "object",
+    "items": {
+      "download_format": {
+        "description": "默认下载格式",
+        "type": "string",
+        "default": "epub",
+        "options": [
+          "epub",
+          "txt"
+        ]
+      },
+      "naming_mode": {
+        "description": "文件命名方式",
+        "type": "string",
+        "default": "book_name",
+        "options": [
+          "book_name",
+          "number"
+        ]
+      },
+      "use_book_dir": {
+        "description": "是否为每本书创建独立目录",
+        "type": "bool",
+        "default": true
+      },
+      "download_images": {
+        "description": "生成 EPUB 时下载封面和插图",
+        "type": "bool",
+        "default": true
+      },
+      "max_threads": {
+        "description": "并发下载数",
+        "type": "int",
+        "default": 5,
+        "hint": "过高可能触发站点限流。"
+      },
+      "timeout_seconds": {
+        "description": "请求超时时间（秒）",
+        "type": "int",
+        "default": 180
+      },
+      "retry_attempts": {
+        "description": "失败重试次数",
+        "type": "int",
+        "default": 2
+      },
+      "retry_delays": {
+        "description": "重试等待秒数列表",
+        "type": "list",
+        "default": [
+          1,
+          3,
+          5
+        ]
+      },
+      "max_chapters_per_download": {
+        "description": "单次最多下载章节数",
+        "type": "int",
+        "default": 120,
+        "hint": "设置为 0 表示不限制。"
+      }
+    }
+  }
+}
+

@@ -1,0 +1,236 @@
+from __future__ import annotations
+
+import re
+from urllib.parse import urljoin
+
+from bs4 import BeautifulSoup, Tag
+
+from .model import Book, Chapter
+
+
+def _get_text_or_empty(node: Tag | None) -> str:
+    if node is None:
+        return ""
+    return node.get_text(strip=True)
+
+
+def _guess_chapter_title(a_elem: Tag) -> str:
+    p = a_elem.find("p")
+    if p is not None:
+        return p.get_text(strip=True)
+    return a_elem.get_text(strip=True)
+
+
+def parse_book(html: str, url: str) -> Book:
+    soup = BeautifulSoup(html, "html.parser")
+
+    title_node = soup.select_one(".book-detail h2")
+    if title_node is None:
+        raise ValueError("无法从 .book-detail h2 获取书籍标题")
+    title = _get_text_or_empty(title_node)
+
+    author = "未知作者"
+    for li in soup.select("ul.book-detail li"):
+        if li.text and "作者:" in li.text:
+            a = li.find("a")
+            if a:
+                author = _get_text_or_empty(a)
+            break
+
+    intro_dom = soup.select_one(".description")
+    if intro_dom is None:
+        intro_dom = soup.select_one(".book-description")
+    introduction = intro_dom.get_text("\n", strip=True) if intro_dom else ""
+
+    cover_node = soup.select_one(".product-gallery img")
+    if cover_node is None:
+        cover_node = soup.select_one(".book-detail img")
+    cover_url = cover_node.get("src") if cover_node else None
+    if cover_url and not cover_url.startswith("http"):
+        cover_url = urljoin(url, cover_url)
+
+    update_time = None
+    for li in soup.select("ul.book-detail li"):
+        text = li.get_text(strip=True)
+        if "最近更新" in text or "最后更新" in text or "最後更新" in text:
+            parts = text.split(":", 1)
+            if len(parts) > 1:
+                update_time = parts[1].strip()
+            break
+
+    tags = [
+        a.get_text(strip=True) for a in soup.select("section.widget-tags.m-t-20 a.tag")
+    ]
+    if not tags:
+        tags = [a.get_text(strip=True) for a in soup.select(".widget-tags a.tag")]
+
+    book = Book(
+        url=url,
+        title=title,
+        author=author,
+        introduction=introduction,
+        cover_url=cover_url,
+        update_time=update_time,
+        tags=tags,
+    )
+
+    chapter_container = soup.select_one("#chapterList")
+    if chapter_container is None:
+        return book
+
+    chapter_index = 0
+    section_index = 0
+    details_section_map: dict[int, tuple[int, str | None]] = {}
+
+    # ESJ chapter links can be nested under h2/span/details wrappers.
+    for a in chapter_container.find_all("a"):
+        href = (a.get("href") or "").strip()
+        if not href or href in {"#", "javascript:void(0)"}:
+            continue
+
+        title_text = _guess_chapter_title(a)
+        if not title_text or title_text in {"<", ">"}:
+            continue
+
+        current_section_name: str | None = None
+        current_section_index: int | None = None
+
+        details_node = a.find_parent("details")
+        if details_node is not None:
+            details_id = id(details_node)
+            if details_id not in details_section_map:
+                section_index += 1
+                summary = details_node.find("summary")
+                section_name = _get_text_or_empty(summary) or None
+                details_section_map[details_id] = (section_index, section_name)
+
+            current_section_index, current_section_name = details_section_map[
+                details_id
+            ]
+
+        chapter_index += 1
+        chapter_url = urljoin(url, href)
+        book.chapters.append(
+            Chapter(
+                url=chapter_url,
+                title=title_text,
+                index=chapter_index,
+                section_name=current_section_name,
+                section_index=current_section_index,
+            )
+        )
+
+    return book
+
+
+def parse_chapter(html: str, url: str, title: str | None = None) -> tuple[str, str]:
+    soup = BeautifulSoup(html, "html.parser")
+    content = soup.select_one(".forum-content")
+    if content is None:
+        return title or url, ""
+
+    for node in content.select("h3, footer"):
+        node.decompose()
+
+    return title or url, str(content)
+
+
+def parse_favorites(html: str) -> tuple[list[dict[str, str]], int]:
+    """
+    解析收藏夹/最近更新列表
+    返回: (小说列表, 总页数)
+    小说列表项: {title, url, latest_chapter, last_viewed, update_time}
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    novels = []
+
+    for tr in soup.select("tr"):
+        item = tr.select_one(".product-item")
+        if not item:
+            continue
+
+        title_elem = item.select_one(".product-title a")
+        if not title_elem:
+            continue
+
+        title = title_elem.get_text(strip=True)
+        url = title_elem.get("href")
+        if url and not url.startswith("http"):
+            url = f"https://www.esjzone.one{url}"
+
+        latest_chapter_elem = item.select_one(".book-ep .mr-3 a")
+        latest_chapter = (
+            latest_chapter_elem.get_text(strip=True) if latest_chapter_elem else ""
+        )
+
+        book_ep_divs = item.select(".book-ep > div")
+        last_viewed = ""
+        if len(book_ep_divs) > 1:
+            last_viewed = (
+                book_ep_divs[1].get_text(strip=True).replace("最後觀看：", "").strip()
+            )
+
+        update_time_elem = item.select_one(".book-update")
+        update_time = (
+            update_time_elem.get_text(strip=True).replace("更新日期：", "").strip()
+            if update_time_elem
+            else ""
+        )
+
+        novels.append(
+            {
+                "title": title,
+                "url": url,
+                "latest_chapter": latest_chapter,
+                "last_viewed": last_viewed,
+                "update_time": update_time,
+            }
+        )
+
+    total_pages = 1
+    script_content = ""
+    for script in soup.find_all("script"):
+        if script.string and "bootpag" in script.string:
+            script_content = script.string
+            break
+
+    if script_content:
+        match = re.search(r"total:\s*(\d+)", script_content)
+        if match:
+            total_pages = int(match.group(1))
+
+    return novels, total_pages
+
+
+def parse_novel_status(html: str, url: str) -> dict[str, str]:
+    """
+    轻量级解析小说状态，仅获取标题、更新时间和最新章节
+    """
+    soup = BeautifulSoup(html, "html.parser")
+
+    title_node = soup.select_one(".book-detail h2")
+    title = _get_text_or_empty(title_node) if title_node else "未知标题"
+
+    update_time = "未知时间"
+    for li in soup.select("ul.book-detail li"):
+        text = li.get_text(strip=True)
+        if "最近更新" in text or "最后更新" in text or "最後更新" in text:
+            parts = text.split(":", 1)
+            if len(parts) > 1:
+                update_time = parts[1].strip()
+            break
+
+    latest_chapter = ""
+    chapter_container = soup.select_one("#chapterList")
+    if chapter_container:
+        all_links = chapter_container.find_all("a")
+        if all_links:
+            last_link = all_links[-1]
+            latest_chapter = _guess_chapter_title(last_link)
+
+    return {
+        "title": title,
+        "url": url,
+        "update_time": update_time,
+        "latest_chapter": latest_chapter,
+    }
