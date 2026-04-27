@@ -121,6 +121,30 @@
         "type": "float",
         "default": 12,
         "hint": "允许范围 0.5-168。插件会按此间隔检查监控列表，发现新章节后发送提示并更新记录。"
+      },
+      "max_entries": {
+        "description": "全局最大监控条目数",
+        "type": "int",
+        "default": 1000,
+        "hint": "允许范围 1-5000。"
+      },
+      "max_entries_per_origin": {
+        "description": "单个会话最大监控条目数",
+        "type": "int",
+        "default": 50,
+        "hint": "允许范围 1-200。"
+      },
+      "check_batch_size": {
+        "description": "单轮自动检查最大条目数",
+        "type": "int",
+        "default": 100,
+        "hint": "允许范围 1-500。"
+      },
+      "check_concurrency": {
+        "description": "监控检查并发数",
+        "type": "int",
+        "default": 3,
+        "hint": "允许范围 1-10。"
       }
     }
   }

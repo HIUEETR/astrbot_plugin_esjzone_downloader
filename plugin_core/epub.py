@@ -23,14 +23,48 @@ def escape_xml(text: str) -> str:
 
 
 def build_epub(
-    book: Book, chapters: Iterable[Chapter], output_path: str | Path
+    book: Book,
+    chapters: Iterable[Chapter],
+    output_path: str | Path,
+    max_output_bytes: int | None = None,
 ) -> None:
     output_path = Path(output_path)
+    chapters = list(chapters)
     book_id = str(uuid.uuid4())
+    written_source_bytes = 0
+
+    def writestr_limited(
+        zf: zipfile.ZipFile,
+        filename: str,
+        content: str | bytes,
+        *,
+        compress_type: int | None = None,
+    ) -> None:
+        nonlocal written_source_bytes
+        size = len(content.encode("utf-8") if isinstance(content, str) else content)
+        if (
+            max_output_bytes is not None
+            and written_source_bytes + size > max_output_bytes
+        ):
+            raise ValueError("生成文件超过大小限制。")
+        kwargs = {}
+        if compress_type is not None:
+            kwargs["compress_type"] = compress_type
+        zf.writestr(filename, content, **kwargs)
+        written_source_bytes += size
+        if (
+            max_output_bytes is not None
+            and output_path.exists()
+            and output_path.stat().st_size > max_output_bytes
+        ):
+            raise ValueError("生成文件超过大小限制。")
 
     with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr(
-            "mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED
+        writestr_limited(
+            zf,
+            "mimetype",
+            "application/epub+zip",
+            compress_type=zipfile.ZIP_STORED,
         )
 
         container_xml = """<?xml version="1.0" encoding="utf-8"?>
@@ -40,7 +74,7 @@ def build_epub(
   </rootfiles>
 </container>
 """
-        zf.writestr("META-INF/container.xml", container_xml)
+        writestr_limited(zf, "META-INF/container.xml", container_xml)
 
         spine_items: list[str] = []
         manifest_items: list[str] = []
@@ -83,7 +117,7 @@ def build_epub(
   </body>
 </html>
 """
-            zf.writestr(chapter_filename, chapter_xhtml)
+            writestr_limited(zf, chapter_filename, chapter_xhtml)
 
         # Write image resources.
         cover_id = None
@@ -102,7 +136,7 @@ def build_epub(
             except Exception:
                 pass
 
-            zf.writestr(f"OEBPS/images/cover{cover_ext}", book.cover_image)
+            writestr_limited(zf, f"OEBPS/images/cover{cover_ext}", book.cover_image)
             cover_id = "cover_img"
 
             manifest_items.append(
@@ -110,7 +144,7 @@ def build_epub(
             )
 
         for filename, (content, mimetype) in all_images.items():
-            zf.writestr(f"OEBPS/images/{filename}", content)
+            writestr_limited(zf, f"OEBPS/images/{filename}", content)
             manifest_items.append(
                 f'<item id="img_{filename.replace(".", "_")}" href="images/{filename}" media-type="{mimetype}"/>'
             )
@@ -140,7 +174,7 @@ def build_epub(
         ncx_content += """  </navMap>
 </ncx>
 """
-        zf.writestr("OEBPS/toc.ncx", ncx_content)
+        writestr_limited(zf, "OEBPS/toc.ncx", ncx_content)
         manifest_items.append(
             '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>'
         )
@@ -181,4 +215,4 @@ def build_epub(
   </spine>
 </package>
 """
-        zf.writestr("OEBPS/content.opf", content_opf)
+        writestr_limited(zf, "OEBPS/content.opf", content_opf)

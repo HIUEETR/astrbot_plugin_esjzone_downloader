@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import html
 import json
 import os
 import re
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from http.cookiejar import Cookie
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -25,6 +28,8 @@ from .parser import parse_book, parse_chapter, parse_favorites, parse_novel_stat
 
 ESJ_BASE_URL = "https://www.esjzone.one"
 ALLOWED_ESJ_HOSTS = {"www.esjzone.one"}
+ALLOWED_COOKIE_DOMAINS = {"www.esjzone.one", ".esjzone.one", "esjzone.one"}
+MAX_REDIRECTS = 5
 DETAIL_PATH_RE = re.compile(r"^/detail/(\d+)\.html$")
 MAX_FILENAME_LENGTH = 120
 RESERVED_WINDOWS_FILENAMES = {
@@ -69,6 +74,11 @@ class DownloadBudget:
                 raise ValueError("图片总大小超过限制。")
             self.image_bytes = next_size
 
+    async def add_normalized_image_bytes(self, size: int) -> None:
+        if size > self.max_image_bytes:
+            raise ValueError("图片转码后超过单图大小限制。")
+        await self.add_image_bytes(size)
+
 
 class EsjzoneDownloadService:
     def __init__(self, config: dict[str, Any], data_dir: Path):
@@ -110,7 +120,7 @@ class EsjzoneDownloadService:
         user_name_tag = soup.find("h6", class_="user-name")
         if user_name_tag:
             username = user_name_tag.get_text(strip=True)
-            logger.info(f"[ESJ] cookie validated for user: {username}")
+            logger.info("[ESJ] cookie validated")
             return username
         logger.info("[ESJ] cookie validation did not find a logged-in user")
         return None
@@ -129,7 +139,7 @@ class EsjzoneDownloadService:
         if not email or not password:
             raise ValueError("未配置 ESJ Zone 账号或密码。")
 
-        logger.info(f"[ESJ] login started for account: {_mask_account(email)}")
+        logger.info("[ESJ] login started")
         headers = {
             "X-Requested-With": "XMLHttpRequest",
             "Origin": ESJ_BASE_URL,
@@ -148,16 +158,17 @@ class EsjzoneDownloadService:
         if not username:
             raise ValueError("登录请求完成，但 Cookie 校验失败。")
         await self._save_cookies(user_key)
-        logger.info(f"[ESJ] login succeeded for user: {username}")
+        logger.info("[ESJ] login succeeded")
         return username
 
     async def get_book_info(self, url: str, user_key: str | None = None) -> Book:
         normalized_url = self.normalize_url(url)
-        logger.info(f"[ESJ] fetching book info: {normalized_url}")
+        logger.info(f"[ESJ] fetching book info: {_safe_url_for_log(normalized_url)}")
         response = await self._request(normalized_url, user_key=user_key)
         book = parse_book(response.text, normalized_url)
         logger.info(
-            f"[ESJ] parsed book info: {book.title}, chapters={len(book.chapters)}"
+            f"[ESJ] parsed book info: {_safe_url_for_log(normalized_url)}, "
+            f"chapters={len(book.chapters)}"
         )
         return book
 
@@ -165,7 +176,7 @@ class EsjzoneDownloadService:
         self, url: str, user_key: str | None = None
     ) -> dict[str, str]:
         normalized_url = self.normalize_url(url)
-        logger.info(f"[ESJ] checking novel status: {normalized_url}")
+        logger.info(f"[ESJ] checking novel status: {_safe_url_for_log(normalized_url)}")
         response = await self._request(normalized_url, user_key=user_key)
         status = parse_novel_status(response.text, normalized_url)
         logger.info(
@@ -211,8 +222,9 @@ class EsjzoneDownloadService:
             raise ValueError("下载格式只支持 epub 或 txt。")
 
         normalized_url = self.normalize_url(url)
+        book_id = self.book_id(normalized_url)
         logger.info(
-            f"[ESJ] download started: url={normalized_url}, format={fmt}, "
+            f"[ESJ] download started: book_id={book_id}, format={fmt}, "
             f"start={start_chapter or 'first'}, end={end_chapter or 'last'}"
         )
         download_images = fmt == "epub" and self._download_images()
@@ -242,9 +254,9 @@ class EsjzoneDownloadService:
             )
 
         logger.info(
-            f"[ESJ] download finished: {book.title}, "
+            f"[ESJ] download finished: book_id={book_id}, "
             f"chapters={len(selected_chapters)}, images={image_count}, "
-            f"path={output_path}"
+            f"file={output_path.name}"
         )
         return DownloadResult(
             book=book,
@@ -266,7 +278,8 @@ class EsjzoneDownloadService:
         book = parse_book(response.text, normalized_url)
         selected_chapters = self._select_chapters(book, start_chapter, end_chapter)
         logger.info(
-            f"[ESJ] selected chapters: book={book.title}, count={len(selected_chapters)}"
+            f"[ESJ] selected chapters: {_safe_url_for_log(normalized_url)}, "
+            f"count={len(selected_chapters)}"
         )
 
         budget = DownloadBudget(
@@ -288,8 +301,9 @@ class EsjzoneDownloadService:
                     "cover.png",
                     budget.max_image_pixels,
                 )
+                await budget.add_normalized_image_bytes(len(book.cover_image))
             except Exception as exc:
-                logger.warning(f"[ESJ] cover download failed: {exc}")
+                logger.warning(f"[ESJ] cover download failed: {_safe_exception(exc)}")
 
         image_counter = 0
 
@@ -365,15 +379,20 @@ class EsjzoneDownloadService:
                         budget,
                         user_key=user_key,
                     )
-                chapter.images[filename] = _normalize_image_bytes(
+                normalized = _normalize_image_bytes(
                     raw,
                     filename,
                     budget.max_image_pixels,
                 )
+                await budget.add_normalized_image_bytes(len(normalized))
+                chapter.images[filename] = normalized
                 downloaded += 1
             except Exception as exc:
                 _img.decompose()
-                logger.warning(f"[ESJ] image download failed: {image_url}, {exc}")
+                logger.warning(
+                    "[ESJ] image download failed: "
+                    f"url={_safe_url_for_log(image_url)}, error={_safe_exception(exc)}"
+                )
 
         await gather_batched(image_jobs, fetch_image, self._max_concurrency())
         return _sanitize_html(str(soup)), downloaded
@@ -391,30 +410,42 @@ class EsjzoneDownloadService:
         last_exc: Exception | None = None
         for attempt in range(retries + 1):
             try:
-                async with client.stream(
-                    "GET",
-                    request_url,
-                    timeout=self._timeout(),
-                    headers={"Accept": "image/*,*/*;q=0.8"},
-                ) as response:
-                    self._validate_esj_url(str(response.url))
-                    response.raise_for_status()
-                    content_type = response.headers.get("content-type", "")
-                    if content_type and not content_type.lower().startswith("image/"):
-                        raise ValueError("图片响应类型无效。")
-                    content_length = response.headers.get("content-length")
-                    if content_length and int(content_length) > budget.max_image_bytes:
-                        raise ValueError("图片文件超过单图大小限制。")
+                current_url = request_url
+                for _redirect_count in range(MAX_REDIRECTS + 1):
+                    async with client.stream(
+                        "GET",
+                        current_url,
+                        timeout=self._timeout(),
+                        headers={"Accept": "image/*,*/*;q=0.8"},
+                    ) as response:
+                        if response.is_redirect:
+                            current_url = self._redirect_target(response, current_url)
+                            continue
 
-                    chunks: list[bytes] = []
-                    total_size = 0
-                    async for chunk in response.aiter_bytes():
-                        total_size += len(chunk)
-                        if total_size > budget.max_image_bytes:
+                        self._validate_esj_url(str(response.url))
+                        response.raise_for_status()
+                        content_type = response.headers.get("content-type", "")
+                        if content_type and not content_type.lower().startswith(
+                            "image/"
+                        ):
+                            raise ValueError("图片响应类型无效。")
+                        content_length = response.headers.get("content-length")
+                        if (
+                            content_length
+                            and int(content_length) > budget.max_image_bytes
+                        ):
                             raise ValueError("图片文件超过单图大小限制。")
-                        await budget.add_image_bytes(len(chunk))
-                        chunks.append(chunk)
-                    return b"".join(chunks)
+
+                        chunks: list[bytes] = []
+                        total_size = 0
+                        async for chunk in response.aiter_bytes():
+                            total_size += len(chunk)
+                            if total_size > budget.max_image_bytes:
+                                raise ValueError("图片文件超过单图大小限制。")
+                            await budget.add_image_bytes(len(chunk))
+                            chunks.append(chunk)
+                        return b"".join(chunks)
+                raise ValueError("图片请求重定向次数超过限制。")
             except Exception as exc:
                 last_exc = exc
                 if attempt >= retries:
@@ -422,7 +453,8 @@ class EsjzoneDownloadService:
                 delay = retry_delays[min(attempt, len(retry_delays) - 1)]
                 logger.warning(
                     f"[ESJ] image request failed and will retry in {delay}s: "
-                    f"{request_url}, error={exc}"
+                    f"url={_safe_url_for_log(request_url)}, "
+                    f"error={_safe_exception(exc)}"
                 )
                 await asyncio.sleep(delay)
         assert last_exc is not None
@@ -448,13 +480,13 @@ class EsjzoneDownloadService:
                     f"[ESJ] request {method} {request_url}, "
                     f"attempt={attempt + 1}/{retries + 1}"
                 )
-                response = await client.request(
+                response = await self._request_following_safe_redirects(
+                    client,
                     method,
                     request_url,
                     timeout=timeout or self._timeout(),
                     **kwargs,
                 )
-                self._validate_esj_url(str(response.url))
                 response.raise_for_status()
                 return response
             except Exception as exc:
@@ -464,14 +496,54 @@ class EsjzoneDownloadService:
                 delay = retry_delays[min(attempt, len(retry_delays) - 1)]
                 logger.warning(
                     f"[ESJ] request failed and will retry in {delay}s: "
-                    f"{method} {request_url}, error={exc}"
+                    f"{method} {_safe_url_for_log(request_url)}, "
+                    f"error={_safe_exception(exc)}"
                 )
                 await asyncio.sleep(delay)
         assert last_exc is not None
         logger.warning(
-            f"[ESJ] request failed permanently: {method} {request_url}, {last_exc}"
+            f"[ESJ] request failed permanently: {method} "
+            f"{_safe_url_for_log(request_url)}, {_safe_exception(last_exc)}"
         )
         raise last_exc
+
+    async def _request_following_safe_redirects(
+        self,
+        client: httpx.AsyncClient,
+        method: str,
+        url: str,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        current_url = self._validate_esj_url(url)
+        current_method = method.upper()
+        current_kwargs = dict(kwargs)
+        for _redirect_count in range(MAX_REDIRECTS + 1):
+            response = await client.request(
+                current_method, current_url, **current_kwargs
+            )
+            if not response.is_redirect:
+                self._validate_esj_url(str(response.url))
+                return response
+
+            next_url = self._redirect_target(response, current_url)
+            await response.aclose()
+            if current_method not in {"GET", "HEAD"}:
+                if response.status_code not in {301, 302, 303}:
+                    raise ValueError("不跟随会保留请求体的重定向。")
+                current_method = "GET"
+                current_kwargs = {
+                    key: value
+                    for key, value in current_kwargs.items()
+                    if key not in {"content", "data", "files", "json"}
+                }
+            current_url = next_url
+        raise ValueError("请求重定向次数超过限制。")
+
+    def _redirect_target(self, response: httpx.Response, current_url: str) -> str:
+        location = response.headers.get("location", "").strip()
+        if not location:
+            raise ValueError("重定向响应缺少 Location。")
+        return self._validate_esj_url(urljoin(current_url, location))
 
     async def _get_client(self, user_key: str | None = None) -> httpx.AsyncClient:
         scope = self._client_scope(user_key)
@@ -483,7 +555,7 @@ class EsjzoneDownloadService:
             self.data_dir.mkdir(parents=True, exist_ok=True)
             self.downloads_dir.mkdir(parents=True, exist_ok=True)
             client = httpx.AsyncClient(
-                follow_redirects=True,
+                follow_redirects=False,
                 headers={
                     "User-Agent": (
                         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -496,7 +568,7 @@ class EsjzoneDownloadService:
             self._clients[scope] = client
             if user_key:
                 await self._load_cookies(scope, client)
-            logger.info(f"[ESJ] HTTP client initialized: scope={scope}")
+            logger.info(f"[ESJ] HTTP client initialized: scope={_hash_for_log(scope)}")
             return client
 
     async def clear_login(self, user_key: str) -> None:
@@ -507,7 +579,24 @@ class EsjzoneDownloadService:
         cookies_path = self._cookies_path(scope)
         if cookies_path.exists():
             cookies_path.unlink()
-        logger.info(f"[ESJ] cleared cookies for scope={scope}")
+        logger.info(f"[ESJ] cleared cookies for scope={_hash_for_log(scope)}")
+
+    async def clear_all_logins(self) -> int:
+        for client in self._clients.values():
+            client.cookies.clear()
+        deleted = 0
+        users_root = self.users_dir.resolve()
+        if not users_root.exists():
+            return deleted
+        for cookies_path in users_root.glob("*/cookies.json"):
+            try:
+                cookies_path.resolve().relative_to(users_root)
+            except ValueError:
+                continue
+            cookies_path.unlink()
+            deleted += 1
+        logger.info(f"[ESJ] cleared all user cookies: count={deleted}")
+        return deleted
 
     async def _load_cookies(self, scope: str, client: httpx.AsyncClient) -> None:
         cookies_path = self._cookies_path(scope)
@@ -522,16 +611,9 @@ class EsjzoneDownloadService:
             for cookie in data:
                 if not isinstance(cookie, dict):
                     continue
-                name = str(cookie.get("name", ""))
-                value = str(cookie.get("value", ""))
-                if not name:
+                if not _is_allowed_cookie_record(cookie):
                     continue
-                client.cookies.set(
-                    name,
-                    value,
-                    domain=cookie.get("domain") or "www.esjzone.one",
-                    path=cookie.get("path") or "/",
-                )
+                client.cookies.jar.set_cookie(_cookie_from_record(cookie))
                 loaded += 1
             logger.info(f"[ESJ] loaded {loaded} cookies")
 
@@ -546,15 +628,12 @@ class EsjzoneDownloadService:
         lock = self._cookie_lock(scope)
         async with lock:
             cookies = [
-                {
-                    "name": cookie.name,
-                    "value": cookie.value,
-                    "domain": cookie.domain,
-                    "path": cookie.path,
-                }
+                _cookie_to_record(cookie)
                 for cookie in client.cookies.jar
+                if _is_allowed_cookie(cookie)
             ]
             _write_json_atomic(cookies_path, cookies)
+            _restrict_file_permissions(cookies_path)
             logger.info(f"[ESJ] saved {len(cookies)} cookies")
 
     def _client_scope(self, user_key: str | None) -> str:
@@ -664,8 +743,9 @@ class EsjzoneDownloadService:
     ) -> None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = output_path.with_name(f".{output_path.name}.{uuid.uuid4().hex}.tmp")
+        max_output_bytes = self._max_output_bytes()
         try:
-            await asyncio.to_thread(writer, *args, tmp_path)
+            await asyncio.to_thread(writer, *args, tmp_path, max_output_bytes)
             self._ensure_output_size(tmp_path)
             tmp_path.replace(output_path)
         finally:
@@ -677,23 +757,35 @@ class EsjzoneDownloadService:
         book: Book,
         chapters: list[Chapter],
         output_path: Path,
+        max_output_bytes: int,
     ) -> None:
-        lines = [
-            f"{book.title}\n",
-            f"作者: {book.author}\n",
-            f"源网址: {book.url}\n\n",
-            "简介:\n",
-            f"{book.introduction}\n\n",
-            "目录:\n",
-        ]
-        for chapter in chapters:
-            lines.append(f"{chapter.title}\n")
-        lines.append("\n" + "=" * 20 + "\n\n")
-        for chapter in chapters:
-            lines.append(f"{chapter.title}\n")
-            lines.append("-" * len(chapter.title) + "\n\n")
-            lines.append((chapter.content_text or "") + "\n\n")
-        output_path.write_text("".join(lines), encoding="utf-8")
+        written = 0
+
+        def write_limited(handle: Any, text: str) -> None:
+            nonlocal written
+            size = len(text.encode("utf-8"))
+            if written + size > max_output_bytes:
+                raise ValueError("生成文件超过大小限制。")
+            handle.write(text)
+            written += size
+
+        with output_path.open("w", encoding="utf-8") as handle:
+            for line in (
+                f"{book.title}\n",
+                f"作者: {book.author}\n",
+                f"源网址: {book.url}\n\n",
+                "简介:\n",
+                f"{book.introduction}\n\n",
+                "目录:\n",
+            ):
+                write_limited(handle, line)
+            for chapter in chapters:
+                write_limited(handle, f"{chapter.title}\n")
+            write_limited(handle, "\n" + "=" * 20 + "\n\n")
+            for chapter in chapters:
+                write_limited(handle, f"{chapter.title}\n")
+                write_limited(handle, "-" * len(chapter.title) + "\n\n")
+                write_limited(handle, (chapter.content_text or "") + "\n\n")
 
     def _resolve_output_path(self, book: Book, url: str, fmt: str) -> Path:
         download_config = self._download_config()
@@ -865,16 +957,22 @@ def _plain_text_from_html(html: str) -> str:
 
 
 def _normalize_image_bytes(raw: bytes, filename: str, max_pixels: int) -> bytes:
+    previous_max_pixels = Image.MAX_IMAGE_PIXELS
     Image.MAX_IMAGE_PIXELS = max_pixels
-    with Image.open(BytesIO(raw)) as image:
-        width, height = image.size
-        if width * height > max_pixels:
-            raise ValueError("图片像素数超过限制。")
-        if filename.lower().endswith(".gif"):
-            return raw
-        output = BytesIO()
-        image.save(output, format="PNG")
-        return output.getvalue()
+    try:
+        with Image.open(BytesIO(raw)) as check_image:
+            check_image.verify()
+        with Image.open(BytesIO(raw)) as image:
+            width, height = image.size
+            if width * height > max_pixels:
+                raise ValueError("图片像素数超过限制。")
+            if filename.lower().endswith(".gif"):
+                return raw
+            output = BytesIO()
+            image.save(output, format="PNG")
+            return output.getvalue()
+    finally:
+        Image.MAX_IMAGE_PIXELS = previous_max_pixels
 
 
 def _sanitize_html(raw_html: str) -> str:
@@ -977,6 +1075,15 @@ def _write_json_atomic(path: Path, data: Any) -> None:
     tmp_path.replace(path)
 
 
+def _restrict_file_permissions(path: Path) -> None:
+    try:
+        os.chmod(path, 0o600)
+    except OSError as exc:
+        logger.debug(
+            f"[ESJ] unable to restrict file permissions: {_safe_exception(exc)}"
+        )
+
+
 def _read_json_with_corrupt_backup(path: Path) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -984,10 +1091,105 @@ def _read_json_with_corrupt_backup(path: Path) -> Any:
         backup_path = path.with_name(f"{path.name}.corrupt.{uuid.uuid4().hex[:8]}")
         try:
             path.replace(backup_path)
-            logger.warning(f"[ESJ] moved corrupt JSON to {backup_path.name}: {exc}")
+            logger.warning(
+                f"[ESJ] moved corrupt JSON to {backup_path.name}: "
+                f"{_safe_exception(exc)}"
+            )
         except Exception as backup_exc:
-            logger.warning(f"[ESJ] failed to backup corrupt JSON: {backup_exc}")
+            logger.warning(
+                f"[ESJ] failed to backup corrupt JSON: {_safe_exception(backup_exc)}"
+            )
         return None
+
+
+def _is_allowed_cookie(cookie: Any) -> bool:
+    domain = str(getattr(cookie, "domain", "") or "").lower()
+    path = str(getattr(cookie, "path", "") or "/")
+    expires = getattr(cookie, "expires", None)
+    return _is_allowed_cookie_values(domain, path, expires)
+
+
+def _is_allowed_cookie_record(record: dict[str, Any]) -> bool:
+    name = str(record.get("name", "") or "")
+    value = str(record.get("value", "") or "")
+    domain = str(record.get("domain", "") or "www.esjzone.one").lower()
+    path = str(record.get("path", "") or "/")
+    expires = record.get("expires")
+    return bool(name and value) and _is_allowed_cookie_values(domain, path, expires)
+
+
+def _is_allowed_cookie_values(domain: str, path: str, expires: Any) -> bool:
+    if domain not in ALLOWED_COOKIE_DOMAINS:
+        return False
+    if not path.startswith("/"):
+        return False
+    try:
+        if expires is not None and float(expires) <= time.time():
+            return False
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _cookie_to_record(cookie: Any) -> dict[str, Any]:
+    rest = getattr(cookie, "_rest", {}) or {}
+    rest_keys = {str(key).lower() for key in rest}
+    return {
+        "name": cookie.name,
+        "value": cookie.value,
+        "domain": cookie.domain,
+        "path": cookie.path or "/",
+        "expires": cookie.expires,
+        "secure": bool(cookie.secure),
+        "httponly": "httponly" in rest_keys,
+    }
+
+
+def _cookie_from_record(record: dict[str, Any]) -> Cookie:
+    domain = str(record.get("domain") or "www.esjzone.one")
+    expires = record.get("expires")
+    expires_int = int(expires) if expires is not None else None
+    return Cookie(
+        version=0,
+        name=str(record.get("name") or ""),
+        value=str(record.get("value") or ""),
+        port=None,
+        port_specified=False,
+        domain=domain,
+        domain_specified=True,
+        domain_initial_dot=domain.startswith("."),
+        path=str(record.get("path") or "/"),
+        path_specified=True,
+        secure=bool(record.get("secure", True)),
+        expires=expires_int,
+        discard=expires_int is None,
+        comment=None,
+        comment_url=None,
+        rest={"HttpOnly": None} if record.get("httponly") else {},
+        rfc2109=False,
+    )
+
+
+def _safe_url_for_log(url: str) -> str:
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return "invalid-url"
+    match = DETAIL_PATH_RE.fullmatch(parsed.path)
+    if match:
+        return f"book_id={match.group(1)}"
+    return f"host={parsed.hostname or 'unknown'} path={parsed.path[:40]}"
+
+
+def _hash_for_log(value: str | None) -> str:
+    text = str(value or "")
+    if not text:
+        return "none"
+    return hashlib.blake2b(text.encode("utf-8"), digest_size=6).hexdigest()
+
+
+def _safe_exception(exc: Exception) -> str:
+    return exc.__class__.__name__
 
 
 def _mask_account(account: str) -> str:

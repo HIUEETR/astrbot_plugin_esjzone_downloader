@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import time
@@ -67,6 +68,25 @@ CONFIG_ITEMS = {
     ),
     "monitor_enabled": ("monitor", "enabled", "bool", None),
     "monitor_interval_hours": ("monitor", "interval_hours", "float", (0.5, 168.0)),
+    "monitor_max_entries": ("monitor", "max_entries", "int", (1, 5000)),
+    "monitor_max_entries_per_origin": (
+        "monitor",
+        "max_entries_per_origin",
+        "int",
+        (1, 200),
+    ),
+    "monitor_check_batch_size": (
+        "monitor",
+        "check_batch_size",
+        "int",
+        (1, 500),
+    ),
+    "monitor_check_concurrency": (
+        "monitor",
+        "check_concurrency",
+        "int",
+        (1, 10),
+    ),
 }
 
 
@@ -137,9 +157,12 @@ class EsjzoneDownloaderPlugin(Star):
     async def info(self, event: AstrMessageEvent, url: str):
         """查看 ESJ Zone 小说简介。"""
         try:
-            logger.info(f"[ESJ] info command from {event.unified_msg_origin}: {url}")
             book = await self.service.get_book_info(url)
             book_id = self.service.book_id(book.url)
+            logger.info(
+                f"[ESJ] info command: origin={_hash_for_log(event.unified_msg_origin)}, "
+                f"book_id={book_id}"
+            )
             nodes = [
                 self._node(
                     event,
@@ -160,19 +183,23 @@ class EsjzoneDownloaderPlugin(Star):
                 title = "简介" if idx == 1 else f"简介（续 {idx}）"
                 nodes.append(self._node(event, f"{title}\n\n{chunk}"))
             logger.info(
-                f"[ESJ] info command succeeded: {book.title}, chapters={len(book.chapters)}"
+                f"[ESJ] info command succeeded: book_id={book_id}, "
+                f"chapters={len(book.chapters)}"
             )
             yield event.chain_result([Nodes(nodes)])
         except Exception as exc:
-            logger.warning(f"[ESJ] info failed: {exc}")
+            logger.warning(f"[ESJ] info failed: {_safe_exception(exc)}")
             yield event.plain_result(self._format_user_error("获取书籍信息失败", exc))
 
     @esj.command("check", alias={"c"})
     async def check(self, event: AstrMessageEvent, url: str):
         """查看 ESJ Zone 小说最近更新状态。"""
         try:
-            logger.info(f"[ESJ] check command from {event.unified_msg_origin}: {url}")
             status = await self.service.get_novel_status(url)
+            logger.info(
+                f"[ESJ] check command: origin={_hash_for_log(event.unified_msg_origin)}, "
+                f"book_id={self._safe_book_id(status.get('url') or url)}"
+            )
             yield event.plain_result(
                 "\n".join(
                     [
@@ -184,7 +211,7 @@ class EsjzoneDownloaderPlugin(Star):
                 )
             )
         except Exception as exc:
-            logger.warning(f"[ESJ] check failed: {exc}")
+            logger.warning(f"[ESJ] check failed: {_safe_exception(exc)}")
             yield event.plain_result(self._format_user_error("检查更新失败", exc))
 
     @esj.command("download", alias={"d"})
@@ -204,9 +231,11 @@ class EsjzoneDownloaderPlugin(Star):
         try:
             fmt, start, end = _normalize_download_args(fmt, start, end)
             normalized_url = self.service.normalize_url(url)
+            book_id = self.service.book_id(normalized_url)
             logger.info(
-                f"[ESJ] download command from {event.unified_msg_origin}: "
-                f"url={normalized_url}, format={fmt}, start={start or 'first'}, "
+                f"[ESJ] download command: "
+                f"origin={_hash_for_log(event.unified_msg_origin)}, "
+                f"book_id={book_id}, format={fmt}, start={start or 'first'}, "
                 f"end={end or 'last'}"
             )
             yield event.plain_result(
@@ -221,8 +250,8 @@ class EsjzoneDownloaderPlugin(Star):
                     user_key=self._private_user_key(event),
                 )
                 logger.info(
-                    f"[ESJ] download command succeeded: {result.book.title}, "
-                    f"path={result.output_path}"
+                    f"[ESJ] download command succeeded: book_id={book_id}, "
+                    f"file={result.output_path.name}"
                 )
                 yield event.chain_result(
                     [
@@ -237,7 +266,7 @@ class EsjzoneDownloaderPlugin(Star):
                     ]
                 )
         except Exception as exc:
-            logger.warning(f"[ESJ] download failed: {exc}")
+            logger.warning(f"[ESJ] download failed: {_safe_exception(exc)}")
             yield event.plain_result(self._format_user_error("下载失败", exc))
 
     @esj.command("login", alias={"l"})
@@ -248,7 +277,9 @@ class EsjzoneDownloaderPlugin(Star):
             if blocked:
                 yield event.plain_result(blocked)
                 return
-            logger.info(f"[ESJ] login command from {event.unified_msg_origin}")
+            logger.info(
+                f"[ESJ] login command: origin={_hash_for_log(event.unified_msg_origin)}"
+            )
             username = await self.service.login(
                 email or None,
                 password or None,
@@ -256,13 +287,20 @@ class EsjzoneDownloaderPlugin(Star):
             )
             yield event.plain_result(f"登录成功：{username}")
         except Exception as exc:
-            logger.warning(f"[ESJ] login failed: {exc}")
+            logger.warning(f"[ESJ] login failed: {_safe_exception(exc)}")
             yield event.plain_result(self._format_user_error("登录失败", exc))
 
     @esj.command("logout")
-    async def logout(self, event: AstrMessageEvent):
+    async def logout(self, event: AstrMessageEvent, target: str = ""):
         """清除当前用户 ESJ Zone Cookie。"""
         try:
+            if target.strip().lower() == "all":
+                if not self._is_admin(event):
+                    yield event.plain_result("只有管理员可以清除全部 ESJ 登录态。")
+                    return
+                deleted = await self.service.clear_all_logins()
+                yield event.plain_result(f"已清除 {deleted} 个用户的 ESJ 登录态。")
+                return
             blocked = self._require_private_chat(event, "退出登录")
             if blocked:
                 yield event.plain_result(blocked)
@@ -270,7 +308,7 @@ class EsjzoneDownloaderPlugin(Star):
             await self.service.clear_login(self._user_key(event))
             yield event.plain_result("已清除当前用户的 ESJ 登录态。")
         except Exception as exc:
-            logger.warning(f"[ESJ] logout failed: {exc}")
+            logger.warning(f"[ESJ] logout failed: {_safe_exception(exc)}")
             yield event.plain_result(self._format_user_error("退出登录失败", exc))
 
     @esj.command("fav", alias={"f"})
@@ -290,7 +328,8 @@ class EsjzoneDownloaderPlugin(Star):
                 page = int(sort_by)
                 sort_by = "lastest"
             logger.info(
-                f"[ESJ] favorites command from {event.unified_msg_origin}: "
+                f"[ESJ] favorites command: "
+                f"origin={_hash_for_log(event.unified_msg_origin)}, "
                 f"sort={sort_by}, page={page}"
             )
             novels, total_pages = await self.service.get_favorites(
@@ -329,7 +368,7 @@ class EsjzoneDownloaderPlugin(Star):
             )
             yield event.chain_result([Nodes(nodes)])
         except Exception as exc:
-            logger.warning(f"[ESJ] favorites failed: {exc}")
+            logger.warning(f"[ESJ] favorites failed: {_safe_exception(exc)}")
             yield event.plain_result(self._format_user_error("获取收藏列表失败", exc))
 
     @esj.command("cfg", alias={"config"})
@@ -380,12 +419,13 @@ class EsjzoneDownloaderPlugin(Star):
             self.service.reload_config(dict(self.config))
             self._ensure_monitor_task()
             logger.info(
-                f"[ESJ] config updated by {event.unified_msg_origin}: "
+                f"[ESJ] config updated: "
+                f"origin={_hash_for_log(event.unified_msg_origin)}, "
                 f"{target_key}={parsed_value}"
             )
             yield event.plain_result(f"配置已更新：{target_key} = {parsed_value}")
         except Exception as exc:
-            logger.warning(f"[ESJ] config command failed: {exc}")
+            logger.warning(f"[ESJ] config command failed: {_safe_exception(exc)}")
             yield event.plain_result(self._format_user_error("配置修改失败", exc))
 
     @esj.group("monitor", alias={"m", "mon"})
@@ -403,8 +443,9 @@ class EsjzoneDownloaderPlugin(Star):
                 entries = self._upsert_monitor_entry(entries, entry)
                 self._save_monitor_entries(entries)
             logger.info(
-                f"[ESJ] monitor added: origin={event.unified_msg_origin}, "
-                f"book={entry['book_id']}, title={entry['title']}"
+                f"[ESJ] monitor added: "
+                f"origin={_hash_for_log(event.unified_msg_origin)}, "
+                f"book_id={entry['book_id']}"
             )
             yield event.plain_result(
                 "\n".join(
@@ -417,7 +458,7 @@ class EsjzoneDownloaderPlugin(Star):
                 )
             )
         except Exception as exc:
-            logger.warning(f"[ESJ] monitor add failed: {exc}")
+            logger.warning(f"[ESJ] monitor add failed: {_safe_exception(exc)}")
             yield event.plain_result(self._format_user_error("添加监控失败", exc))
 
     @monitor.command("list", alias={"ls"})
@@ -447,6 +488,7 @@ class EsjzoneDownloaderPlugin(Star):
     async def monitor_remove(self, event: AstrMessageEvent, url: str):
         """移除当前会话的 ESJ 更新监控。"""
         try:
+            target_book_id = "all"
             async with self._monitor_lock:
                 entries = self._load_monitor_entries()
                 before_count = len(entries)
@@ -458,6 +500,7 @@ class EsjzoneDownloaderPlugin(Star):
                     ]
                 else:
                     book_id = self.service.book_id(url)
+                    target_book_id = book_id
                     entries = [
                         entry
                         for entry in entries
@@ -469,12 +512,13 @@ class EsjzoneDownloaderPlugin(Star):
                 removed_count = before_count - len(entries)
                 self._save_monitor_entries(entries)
             logger.info(
-                f"[ESJ] monitor removed: origin={event.unified_msg_origin}, "
-                f"target={url}, removed={removed_count}"
+                f"[ESJ] monitor removed: "
+                f"origin={_hash_for_log(event.unified_msg_origin)}, "
+                f"book_id={target_book_id}, removed={removed_count}"
             )
             yield event.plain_result(f"已移除 {removed_count} 条监控。")
         except Exception as exc:
-            logger.warning(f"[ESJ] monitor remove failed: {exc}")
+            logger.warning(f"[ESJ] monitor remove failed: {_safe_exception(exc)}")
             yield event.plain_result(self._format_user_error("移除监控失败", exc))
 
     @monitor.command("check", alias={"c"})
@@ -490,7 +534,7 @@ class EsjzoneDownloaderPlugin(Star):
                 return
             yield event.plain_result("\n\n".join(update["text"] for update in updates))
         except Exception as exc:
-            logger.warning(f"[ESJ] monitor check failed: {exc}")
+            logger.warning(f"[ESJ] monitor check failed: {_safe_exception(exc)}")
             yield event.plain_result(self._format_user_error("检查监控失败", exc))
 
     def _ensure_monitor_task(self) -> None:
@@ -518,7 +562,7 @@ class EsjzoneDownloaderPlugin(Star):
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.warning(f"[ESJ] monitor loop failed: {exc}")
+                logger.warning(f"[ESJ] monitor loop failed: {_safe_exception(exc)}")
             await asyncio.sleep(self._monitor_interval_seconds())
 
     async def _check_monitor_updates(
@@ -532,35 +576,36 @@ class EsjzoneDownloaderPlugin(Star):
                 entry.get("unified_msg_origin") == origin for entry in entries
             ):
                 return []
+            target_entries = [
+                dict(entry)
+                for entry in entries
+                if (not origin or entry.get("unified_msg_origin") == origin)
+                and entry.get("url")
+            ][: self._monitor_check_batch_size()]
 
-            updates: list[dict[str, str]] = []
-            book_cache: dict[str, Book] = {}
-            now = int(time.time())
-            changed = False
-            logger.info(
-                f"[ESJ] monitor check started: total={len(entries)}, origin={origin or '*'}"
-            )
+        logger.info(
+            f"[ESJ] monitor check started: total={len(target_entries)}, "
+            f"origin={_hash_for_log(origin) if origin else '*'}"
+        )
+        book_cache = await self._fetch_monitor_books(target_entries)
 
+        updates: list[dict[str, str]] = []
+        changed = False
+        target_keys = {_monitor_entry_key(entry) for entry in target_entries}
+        now = int(time.time())
+        async with self._monitor_lock:
+            entries = self._load_monitor_entries()
             for entry in entries:
-                entry_origin = str(entry.get("unified_msg_origin") or "")
-                if origin and entry_origin != origin:
+                if _monitor_entry_key(entry) not in target_keys:
                     continue
                 url = str(entry.get("url") or "")
-                if not url:
+                book = book_cache.get(url)
+                if book is None:
                     continue
-                try:
-                    book = book_cache.get(url)
-                    if book is None:
-                        book = await self.service.get_book_info(url)
-                        book_cache[url] = book
-                    update = self._refresh_monitor_entry(entry, book, now)
-                    changed = True
-                    if update:
-                        updates.append(update)
-                except Exception as exc:
-                    logger.warning(
-                        f"[ESJ] monitor check failed for {entry.get('title')}: {exc}"
-                    )
+                update = self._refresh_monitor_entry(entry, book, now)
+                changed = True
+                if update:
+                    updates.append(update)
 
             if changed:
                 self._save_monitor_entries(entries)
@@ -571,6 +616,28 @@ class EsjzoneDownloaderPlugin(Star):
         logger.info(f"[ESJ] monitor check finished: updates={len(updates)}")
         return updates
 
+    async def _fetch_monitor_books(
+        self,
+        entries: list[dict[str, Any]],
+    ) -> dict[str, Book]:
+        urls = list(dict.fromkeys(str(entry.get("url") or "") for entry in entries))
+        urls = [url for url in urls if url]
+        semaphore = asyncio.Semaphore(self._monitor_check_concurrency())
+        results: dict[str, Book] = {}
+
+        async def fetch(url: str) -> None:
+            async with semaphore:
+                try:
+                    results[url] = await self.service.get_book_info(url)
+                except Exception as exc:
+                    logger.warning(
+                        "[ESJ] monitor check failed for "
+                        f"{self._safe_book_id(url)}: {_safe_exception(exc)}"
+                    )
+
+        await asyncio.gather(*(fetch(url) for url in urls))
+        return results
+
     async def _send_monitor_notification(self, update: dict[str, str]) -> None:
         origin = update.get("origin")
         text = update.get("text") or ""
@@ -578,9 +645,14 @@ class EsjzoneDownloaderPlugin(Star):
             return
         try:
             await self.context.send_message(origin, MessageChain(chain=[Plain(text)]))
-            logger.info(f"[ESJ] monitor notification sent: origin={origin}")
+            logger.info(
+                f"[ESJ] monitor notification sent: origin={_hash_for_log(origin)}"
+            )
         except Exception as exc:
-            logger.warning(f"[ESJ] monitor notification failed: {origin}, {exc}")
+            logger.warning(
+                "[ESJ] monitor notification failed: "
+                f"origin={_hash_for_log(origin)}, error={_safe_exception(exc)}"
+            )
 
     def _refresh_monitor_entry(
         self,
@@ -668,7 +740,9 @@ class EsjzoneDownloaderPlugin(Star):
             return []
         data = _read_json_with_corrupt_backup(self.monitor_path)
         if isinstance(data, list):
-            return [item for item in data if isinstance(item, dict)]
+            return _dedupe_monitor_entries(
+                [item for item in data if isinstance(item, dict)]
+            )
         return []
 
     def _save_monitor_entries(self, entries: list[dict[str, Any]]) -> None:
@@ -681,6 +755,7 @@ class EsjzoneDownloaderPlugin(Star):
         entries: list[dict[str, Any]],
         entry: dict[str, Any],
     ) -> list[dict[str, Any]]:
+        entries = _dedupe_monitor_entries(entries)
         for idx, old_entry in enumerate(entries):
             if (
                 old_entry.get("unified_msg_origin") == entry["unified_msg_origin"]
@@ -688,6 +763,17 @@ class EsjzoneDownloaderPlugin(Star):
             ):
                 entries[idx] = entry
                 return entries
+        origin_count = sum(
+            1
+            for old_entry in entries
+            if old_entry.get("unified_msg_origin") == entry["unified_msg_origin"]
+        )
+        if len(entries) >= self._monitor_max_entries():
+            raise ValueError(f"监控总数不能超过 {self._monitor_max_entries()}。")
+        if origin_count >= self._monitor_max_entries_per_origin():
+            raise ValueError(
+                f"当前会话监控数量不能超过 {self._monitor_max_entries_per_origin()}。"
+            )
         entries.append(entry)
         return entries
 
@@ -767,6 +853,33 @@ class EsjzoneDownloaderPlugin(Star):
             interval_hours = 12
         return min(max(interval_hours, 0.5), 168.0) * 3600
 
+    def _monitor_max_entries(self) -> int:
+        return _safe_int(self._monitor_config().get("max_entries"), 1000, 1, 5000)
+
+    def _monitor_max_entries_per_origin(self) -> int:
+        return _safe_int(
+            self._monitor_config().get("max_entries_per_origin"),
+            50,
+            1,
+            200,
+        )
+
+    def _monitor_check_batch_size(self) -> int:
+        return _safe_int(
+            self._monitor_config().get("check_batch_size"),
+            100,
+            1,
+            500,
+        )
+
+    def _monitor_check_concurrency(self) -> int:
+        return _safe_int(
+            self._monitor_config().get("check_concurrency"),
+            3,
+            1,
+            10,
+        )
+
     def _node(self, event: AstrMessageEvent, text: str) -> Node:
         return Node(
             uin=event.get_self_id() or event.get_sender_id() or "0",
@@ -811,7 +924,8 @@ class EsjzoneDownloaderPlugin(Star):
         if isinstance(exc, ValueError):
             return f"{message}：{exc}"
         error_id = uuid.uuid4().hex[:8]
-        logger.warning(f"[ESJ] user-facing error id={error_id}: {exc}")
+        logger.warning(f"[ESJ] user-facing error id={error_id}: {_safe_exception(exc)}")
+        logger.debug(f"[ESJ] user-facing error detail id={error_id}: {exc}")
         return f"{message}，请稍后重试或联系管理员。错误编号：ESJ-{error_id}"
 
     def _safe_book_id(self, url: str) -> str:
@@ -853,6 +967,22 @@ def _split_text(text: str, limit: int = 1500) -> list[str]:
     return chunks
 
 
+def _monitor_entry_key(entry: dict[str, Any]) -> tuple[str, str]:
+    origin = str(entry.get("unified_msg_origin") or "")
+    book_id = str(entry.get("book_id") or entry.get("url") or "")
+    return origin, book_id
+
+
+def _dedupe_monitor_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: dict[tuple[str, str], dict[str, Any]] = {}
+    for entry in entries:
+        key = _monitor_entry_key(entry)
+        if not key[0] or not key[1]:
+            continue
+        deduped[key] = entry
+    return list(deduped.values())
+
+
 def _normalize_monitor_entry(entry: dict[str, Any]) -> dict[str, Any]:
     fields = {
         "book_id": 32,
@@ -872,6 +1002,18 @@ def _normalize_monitor_entry(entry: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _hash_for_log(value: str | None) -> str:
+    text = str(value or "")
+    if not text:
+        return "none"
+    digest = hashlib.blake2b(text.encode("utf-8"), digest_size=6).hexdigest()
+    return digest
+
+
+def _safe_exception(exc: Exception) -> str:
+    return exc.__class__.__name__
+
+
 def _write_json_atomic(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -889,9 +1031,14 @@ def _read_json_with_corrupt_backup(path: Path) -> Any:
         backup_path = path.with_name(f"{path.name}.corrupt.{uuid.uuid4().hex[:8]}")
         try:
             path.replace(backup_path)
-            logger.warning(f"[ESJ] moved corrupt JSON to {backup_path.name}: {exc}")
+            logger.warning(
+                f"[ESJ] moved corrupt JSON to {backup_path.name}: "
+                f"{_safe_exception(exc)}"
+            )
         except Exception as backup_exc:
-            logger.warning(f"[ESJ] failed to backup corrupt JSON: {backup_exc}")
+            logger.warning(
+                f"[ESJ] failed to backup corrupt JSON: {_safe_exception(backup_exc)}"
+            )
         return None
 
 
