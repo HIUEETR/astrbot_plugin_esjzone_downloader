@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
+import uuid
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -28,12 +30,43 @@ CONFIG_ITEMS = {
     ),
     "use_book_dir": ("download", "use_book_dir", "bool", None),
     "download_images": ("download", "download_images", "bool", None),
-    "max_threads": ("download", "max_threads", "int", 1),
-    "timeout_seconds": ("download", "timeout_seconds", "int", 5),
-    "retry_attempts": ("download", "retry_attempts", "int", 0),
-    "retry_delays": ("download", "retry_delays", "float_list", None),
+    "max_threads": ("download", "max_threads", "int", (1, 10)),
+    "timeout_seconds": ("download", "timeout_seconds", "int", (5, 300)),
+    "retry_attempts": ("download", "retry_attempts", "int", (0, 5)),
+    "retry_delays": ("download", "retry_delays", "float_list", (0.0, 300.0, 5)),
+    "max_chapters_per_download": (
+        "download",
+        "max_chapters_per_download",
+        "int",
+        (1, 1000),
+    ),
+    "max_images_per_download": (
+        "download",
+        "max_images_per_download",
+        "int",
+        (0, 2000),
+    ),
+    "max_image_bytes": ("download", "max_image_bytes", "int", (1024, 50 * 1024 * 1024)),
+    "max_total_image_bytes": (
+        "download",
+        "max_total_image_bytes",
+        "int",
+        (1024, 500 * 1024 * 1024),
+    ),
+    "max_image_pixels": (
+        "download",
+        "max_image_pixels",
+        "int",
+        (1_000_000, 100_000_000),
+    ),
+    "max_output_bytes": (
+        "download",
+        "max_output_bytes",
+        "int",
+        (1024, 1024 * 1024 * 1024),
+    ),
     "monitor_enabled": ("monitor", "enabled", "bool", None),
-    "monitor_interval_hours": ("monitor", "interval_hours", "float", 0.1),
+    "monitor_interval_hours": ("monitor", "interval_hours", "float", (0.5, 168.0)),
 }
 
 
@@ -82,7 +115,8 @@ class EsjzoneDownloaderPlugin(Star):
                     "/esj f [lastest|collected] [页码] - 合并转发收藏列表，默认 lastest",
                     "/esj c <小说URL或编号> - 查看最近更新状态",
                     "/esj d <小说URL或编号> [epub|txt] [起始章节] [结束章节] - 下载并发送文件",
-                    "/esj l <邮箱> <密码> - 登录并保存 Cookie",
+                    "/esj l <邮箱> <密码> - 私聊登录并保存当前用户 Cookie",
+                    "/esj logout - 私聊清除当前用户 Cookie",
                     "/esj cfg [配置项] [值] - 查看或修改插件配置",
                     "/esj m add <小说URL或编号> - 添加当前会话的更新监控",
                     "/esj m list - 查看当前会话的监控列表",
@@ -131,7 +165,7 @@ class EsjzoneDownloaderPlugin(Star):
             yield event.chain_result([Nodes(nodes)])
         except Exception as exc:
             logger.warning(f"[ESJ] info failed: {exc}")
-            yield event.plain_result(f"获取书籍信息失败：{exc}")
+            yield event.plain_result(self._format_user_error("获取书籍信息失败", exc))
 
     @esj.command("check", alias={"c"})
     async def check(self, event: AstrMessageEvent, url: str):
@@ -151,7 +185,7 @@ class EsjzoneDownloaderPlugin(Star):
             )
         except Exception as exc:
             logger.warning(f"[ESJ] check failed: {exc}")
-            yield event.plain_result(f"检查更新失败：{exc}")
+            yield event.plain_result(self._format_user_error("检查更新失败", exc))
 
     @esj.command("download", alias={"d"})
     async def download(
@@ -184,6 +218,7 @@ class EsjzoneDownloaderPlugin(Star):
                     fmt=fmt,
                     start_chapter=start or None,
                     end_chapter=end or None,
+                    user_key=self._private_user_key(event),
                 )
                 logger.info(
                     f"[ESJ] download command succeeded: {result.book.title}, "
@@ -203,18 +238,40 @@ class EsjzoneDownloaderPlugin(Star):
                 )
         except Exception as exc:
             logger.warning(f"[ESJ] download failed: {exc}")
-            yield event.plain_result(f"下载失败：{exc}")
+            yield event.plain_result(self._format_user_error("下载失败", exc))
 
     @esj.command("login", alias={"l"})
     async def login(self, event: AstrMessageEvent, email: str = "", password: str = ""):
         """登录 ESJ Zone 并保存 Cookie。"""
         try:
+            blocked = self._require_private_chat(event, "登录")
+            if blocked:
+                yield event.plain_result(blocked)
+                return
             logger.info(f"[ESJ] login command from {event.unified_msg_origin}")
-            username = await self.service.login(email or None, password or None)
+            username = await self.service.login(
+                email or None,
+                password or None,
+                user_key=self._user_key(event),
+            )
             yield event.plain_result(f"登录成功：{username}")
         except Exception as exc:
             logger.warning(f"[ESJ] login failed: {exc}")
-            yield event.plain_result(f"登录失败：{exc}")
+            yield event.plain_result(self._format_user_error("登录失败", exc))
+
+    @esj.command("logout")
+    async def logout(self, event: AstrMessageEvent):
+        """清除当前用户 ESJ Zone Cookie。"""
+        try:
+            blocked = self._require_private_chat(event, "退出登录")
+            if blocked:
+                yield event.plain_result(blocked)
+                return
+            await self.service.clear_login(self._user_key(event))
+            yield event.plain_result("已清除当前用户的 ESJ 登录态。")
+        except Exception as exc:
+            logger.warning(f"[ESJ] logout failed: {exc}")
+            yield event.plain_result(self._format_user_error("退出登录失败", exc))
 
     @esj.command("fav", alias={"f"})
     async def favorites(
@@ -225,6 +282,10 @@ class EsjzoneDownloaderPlugin(Star):
     ):
         """查看 ESJ Zone 收藏列表。"""
         try:
+            blocked = self._require_private_chat(event, "收藏列表")
+            if blocked:
+                yield event.plain_result(blocked)
+                return
             if sort_by.isdigit():
                 page = int(sort_by)
                 sort_by = "lastest"
@@ -232,7 +293,11 @@ class EsjzoneDownloaderPlugin(Star):
                 f"[ESJ] favorites command from {event.unified_msg_origin}: "
                 f"sort={sort_by}, page={page}"
             )
-            novels, total_pages = await self.service.get_favorites(page, sort_by)
+            novels, total_pages = await self.service.get_favorites(
+                page,
+                sort_by,
+                user_key=self._user_key(event),
+            )
             if not novels:
                 yield event.plain_result("收藏列表为空，或当前登录状态无效。")
                 return
@@ -265,7 +330,7 @@ class EsjzoneDownloaderPlugin(Star):
             yield event.chain_result([Nodes(nodes)])
         except Exception as exc:
             logger.warning(f"[ESJ] favorites failed: {exc}")
-            yield event.plain_result(f"获取收藏列表失败：{exc}")
+            yield event.plain_result(self._format_user_error("获取收藏列表失败", exc))
 
     @esj.command("cfg", alias={"config"})
     async def config_command(
@@ -300,6 +365,10 @@ class EsjzoneDownloaderPlugin(Star):
                 yield event.plain_result("用法：/esj cfg <配置项> <值>")
                 return
 
+            if not self._is_admin(event):
+                yield event.plain_result("只有管理员可以修改 ESJ 全局配置。")
+                return
+
             parsed_value = self._parse_config_value(target_key, raw_value)
             section_name, option_name, _value_type, _extra = CONFIG_ITEMS[target_key]
             section = self.config.setdefault(section_name, {})
@@ -317,7 +386,7 @@ class EsjzoneDownloaderPlugin(Star):
             yield event.plain_result(f"配置已更新：{target_key} = {parsed_value}")
         except Exception as exc:
             logger.warning(f"[ESJ] config command failed: {exc}")
-            yield event.plain_result(f"配置修改失败：{exc}")
+            yield event.plain_result(self._format_user_error("配置修改失败", exc))
 
     @esj.group("monitor", alias={"m", "mon"})
     def monitor(self):
@@ -329,9 +398,10 @@ class EsjzoneDownloaderPlugin(Star):
         try:
             book = await self.service.get_book_info(url)
             entry = self._entry_from_book(book, event)
-            entries = self._load_monitor_entries()
-            entries = self._upsert_monitor_entry(entries, entry)
-            self._save_monitor_entries(entries)
+            async with self._monitor_lock:
+                entries = self._load_monitor_entries()
+                entries = self._upsert_monitor_entry(entries, entry)
+                self._save_monitor_entries(entries)
             logger.info(
                 f"[ESJ] monitor added: origin={event.unified_msg_origin}, "
                 f"book={entry['book_id']}, title={entry['title']}"
@@ -348,16 +418,17 @@ class EsjzoneDownloaderPlugin(Star):
             )
         except Exception as exc:
             logger.warning(f"[ESJ] monitor add failed: {exc}")
-            yield event.plain_result(f"添加监控失败：{exc}")
+            yield event.plain_result(self._format_user_error("添加监控失败", exc))
 
     @monitor.command("list", alias={"ls"})
     async def monitor_list(self, event: AstrMessageEvent):
         """查看当前会话的 ESJ 更新监控列表。"""
-        entries = [
-            entry
-            for entry in self._load_monitor_entries()
-            if entry.get("unified_msg_origin") == event.unified_msg_origin
-        ]
+        async with self._monitor_lock:
+            entries = [
+                entry
+                for entry in self._load_monitor_entries()
+                if entry.get("unified_msg_origin") == event.unified_msg_origin
+            ]
         if not entries:
             yield event.plain_result("当前会话没有监控书籍。")
             return
@@ -376,26 +447,27 @@ class EsjzoneDownloaderPlugin(Star):
     async def monitor_remove(self, event: AstrMessageEvent, url: str):
         """移除当前会话的 ESJ 更新监控。"""
         try:
-            entries = self._load_monitor_entries()
-            before_count = len(entries)
-            if url.lower() == "all":
-                entries = [
-                    entry
-                    for entry in entries
-                    if entry.get("unified_msg_origin") != event.unified_msg_origin
-                ]
-            else:
-                book_id = self.service.book_id(url)
-                entries = [
-                    entry
-                    for entry in entries
-                    if not (
-                        entry.get("unified_msg_origin") == event.unified_msg_origin
-                        and entry.get("book_id") == book_id
-                    )
-                ]
-            removed_count = before_count - len(entries)
-            self._save_monitor_entries(entries)
+            async with self._monitor_lock:
+                entries = self._load_monitor_entries()
+                before_count = len(entries)
+                if url.lower() == "all":
+                    entries = [
+                        entry
+                        for entry in entries
+                        if entry.get("unified_msg_origin") != event.unified_msg_origin
+                    ]
+                else:
+                    book_id = self.service.book_id(url)
+                    entries = [
+                        entry
+                        for entry in entries
+                        if not (
+                            entry.get("unified_msg_origin") == event.unified_msg_origin
+                            and entry.get("book_id") == book_id
+                        )
+                    ]
+                removed_count = before_count - len(entries)
+                self._save_monitor_entries(entries)
             logger.info(
                 f"[ESJ] monitor removed: origin={event.unified_msg_origin}, "
                 f"target={url}, removed={removed_count}"
@@ -403,7 +475,7 @@ class EsjzoneDownloaderPlugin(Star):
             yield event.plain_result(f"已移除 {removed_count} 条监控。")
         except Exception as exc:
             logger.warning(f"[ESJ] monitor remove failed: {exc}")
-            yield event.plain_result(f"移除监控失败：{exc}")
+            yield event.plain_result(self._format_user_error("移除监控失败", exc))
 
     @monitor.command("check", alias={"c"})
     async def monitor_check(self, event: AstrMessageEvent):
@@ -419,7 +491,7 @@ class EsjzoneDownloaderPlugin(Star):
             yield event.plain_result("\n\n".join(update["text"] for update in updates))
         except Exception as exc:
             logger.warning(f"[ESJ] monitor check failed: {exc}")
-            yield event.plain_result(f"检查监控失败：{exc}")
+            yield event.plain_result(self._format_user_error("检查监控失败", exc))
 
     def _ensure_monitor_task(self) -> None:
         if not self._monitor_enabled():
@@ -594,18 +666,14 @@ class EsjzoneDownloaderPlugin(Star):
     def _load_monitor_entries(self) -> list[dict[str, Any]]:
         if not self.monitor_path.exists():
             return []
-        try:
-            data = json.loads(self.monitor_path.read_text(encoding="utf-8"))
-            if isinstance(data, list):
-                return [item for item in data if isinstance(item, dict)]
-        except Exception as exc:
-            logger.warning(f"[ESJ] failed to load monitor entries: {exc}")
+        data = _read_json_with_corrupt_backup(self.monitor_path)
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
         return []
 
     def _save_monitor_entries(self, entries: list[dict[str, Any]]) -> None:
-        self.monitor_path.write_text(
-            json.dumps(entries, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        _write_json_atomic(
+            self.monitor_path, [_normalize_monitor_entry(e) for e in entries]
         )
 
     def _upsert_monitor_entry(
@@ -651,14 +719,31 @@ class EsjzoneDownloaderPlugin(Star):
         if value_type == "bool":
             return _parse_bool_strict(raw_value)
         if value_type == "int":
-            return max(int(raw_value), int(extra or 0))
+            minimum, maximum = _bounds(extra, 0, None)
+            parsed = int(raw_value)
+            if parsed < minimum or (maximum is not None and parsed > maximum):
+                max_text = f" 到 {maximum}" if maximum is not None else " 以上"
+                raise ValueError(f"{key} 范围：{minimum}{max_text}。")
+            return parsed
         if value_type == "float":
-            return max(float(raw_value), float(extra or 0.0))
+            minimum, maximum = _bounds(extra, 0.0, None)
+            parsed = float(raw_value)
+            if parsed < minimum or (maximum is not None and parsed > maximum):
+                max_text = f" 到 {maximum}" if maximum is not None else " 以上"
+                raise ValueError(f"{key} 范围：{minimum}{max_text}。")
+            return parsed
         if value_type == "float_list":
             values = [item.strip() for item in raw_value.split(",") if item.strip()]
             if not values:
                 raise ValueError("retry_delays 不能为空。")
-            return [max(float(item), 0.0) for item in values]
+            minimum, maximum, max_items = _list_bounds(extra, 0.0, 300.0, 5)
+            if len(values) > max_items:
+                raise ValueError(f"retry_delays 最多 {max_items} 项。")
+            parsed_values = [float(item) for item in values]
+            for parsed in parsed_values:
+                if parsed < minimum or parsed > maximum:
+                    raise ValueError(f"retry_delays 每项范围：{minimum} 到 {maximum}。")
+            return parsed_values
         raise ValueError(f"不支持的配置类型：{value_type}")
 
     def _save_plugin_config(self) -> None:
@@ -680,7 +765,7 @@ class EsjzoneDownloaderPlugin(Star):
             interval_hours = float(self._monitor_config().get("interval_hours", 12))
         except (TypeError, ValueError):
             interval_hours = 12
-        return max(interval_hours, 0.1) * 3600
+        return min(max(interval_hours, 0.5), 168.0) * 3600
 
     def _node(self, event: AstrMessageEvent, text: str) -> Node:
         return Node(
@@ -688,6 +773,46 @@ class EsjzoneDownloaderPlugin(Star):
             name="ESJ Zone",
             content=[Plain(text)],
         )
+
+    def _is_private_chat(self, event: AstrMessageEvent) -> bool:
+        is_private = getattr(event, "is_private_chat", None)
+        if callable(is_private):
+            return bool(is_private())
+        return not bool(event.get_group_id())
+
+    def _is_admin(self, event: AstrMessageEvent) -> bool:
+        is_admin = getattr(event, "is_admin", None)
+        if callable(is_admin):
+            return bool(is_admin())
+        return getattr(event, "role", "") == "admin"
+
+    def _require_private_chat(
+        self,
+        event: AstrMessageEvent,
+        action_name: str,
+    ) -> str | None:
+        if self._is_private_chat(event):
+            return None
+        return f"{action_name}涉及账号登录态，只允许在私聊中使用。"
+
+    def _user_key(self, event: AstrMessageEvent) -> str:
+        platform = str(event.get_platform_name() or "unknown").strip() or "unknown"
+        sender_id = str(event.get_sender_id() or "").strip()
+        if not sender_id:
+            sender_id = str(event.unified_msg_origin or "unknown").strip()
+        return f"{platform}:{sender_id}"
+
+    def _private_user_key(self, event: AstrMessageEvent) -> str | None:
+        if not self._is_private_chat(event):
+            return None
+        return self._user_key(event)
+
+    def _format_user_error(self, message: str, exc: Exception) -> str:
+        if isinstance(exc, ValueError):
+            return f"{message}：{exc}"
+        error_id = uuid.uuid4().hex[:8]
+        logger.warning(f"[ESJ] user-facing error id={error_id}: {exc}")
+        return f"{message}，请稍后重试或联系管理员。错误编号：ESJ-{error_id}"
 
     def _safe_book_id(self, url: str) -> str:
         try:
@@ -728,13 +853,88 @@ def _split_text(text: str, limit: int = 1500) -> list[str]:
     return chunks
 
 
-def _safe_int(value: Any, default: int, minimum: int | None = None) -> int:
+def _normalize_monitor_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    fields = {
+        "book_id": 32,
+        "url": 500,
+        "title": 200,
+        "latest_chapter": 300,
+        "update_time": 100,
+        "unified_msg_origin": 300,
+        "created_by": 100,
+    }
+    normalized: dict[str, Any] = {}
+    for key, max_len in fields.items():
+        value = entry.get(key, "")
+        normalized[key] = str(value or "")[:max_len]
+    for key in ("latest_index", "created_at", "updated_at"):
+        normalized[key] = _safe_int(entry.get(key), 0, 0)
+    return normalized
+
+
+def _write_json_atomic(path: Path, data: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    with tmp_path.open("w", encoding="utf-8") as handle:
+        json.dump(data, handle, ensure_ascii=False, indent=2)
+        handle.flush()
+        os.fsync(handle.fileno())
+    tmp_path.replace(path)
+
+
+def _read_json_with_corrupt_backup(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        backup_path = path.with_name(f"{path.name}.corrupt.{uuid.uuid4().hex[:8]}")
+        try:
+            path.replace(backup_path)
+            logger.warning(f"[ESJ] moved corrupt JSON to {backup_path.name}: {exc}")
+        except Exception as backup_exc:
+            logger.warning(f"[ESJ] failed to backup corrupt JSON: {backup_exc}")
+        return None
+
+
+def _bounds(
+    extra: Any,
+    default_minimum: int | float,
+    default_maximum: int | float | None,
+) -> tuple[Any, Any]:
+    if isinstance(extra, tuple):
+        if len(extra) >= 2:
+            return extra[0], extra[1]
+        if len(extra) == 1:
+            return extra[0], default_maximum
+    if extra is not None:
+        return extra, default_maximum
+    return default_minimum, default_maximum
+
+
+def _list_bounds(
+    extra: Any,
+    default_minimum: float,
+    default_maximum: float,
+    default_max_items: int,
+) -> tuple[float, float, int]:
+    if isinstance(extra, tuple) and len(extra) >= 3:
+        return float(extra[0]), float(extra[1]), int(extra[2])
+    return default_minimum, default_maximum, default_max_items
+
+
+def _safe_int(
+    value: Any,
+    default: int,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
     try:
         parsed = int(value)
     except (TypeError, ValueError):
         parsed = default
     if minimum is not None:
-        return max(parsed, minimum)
+        parsed = max(parsed, minimum)
+    if maximum is not None:
+        parsed = min(parsed, maximum)
     return parsed
 
 
