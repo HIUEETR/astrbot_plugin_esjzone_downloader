@@ -65,12 +65,23 @@
           3,
           5
         ]
+      }
+    }
+  },
+  "monitor": {
+    "description": "更新监控配置",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用自动更新监控",
+        "type": "bool",
+        "default": true
       },
-      "max_chapters_per_download": {
-        "description": "单次最多下载章节数",
-        "type": "int",
-        "default": 120,
-        "hint": "设置为 0 表示不限制。"
+      "interval_hours": {
+        "description": "自动检查间隔（小时）",
+        "type": "float",
+        "default": 12,
+        "hint": "插件会按此间隔检查监控列表，发现新章节后发送提示并更新记录。"
       }
     }
   }

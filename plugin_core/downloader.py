@@ -41,6 +41,11 @@ class EsjzoneDownloadService:
         self._client: httpx.AsyncClient | None = None
         self._semaphore = asyncio.Semaphore(self._max_concurrency())
 
+    def reload_config(self, config: dict[str, Any]) -> None:
+        self.config = config
+        self._semaphore = asyncio.Semaphore(self._max_concurrency())
+        logger.info("[ESJ] downloader config reloaded")
+
     async def close(self) -> None:
         if self._client is not None:
             await self._client.aclose()
@@ -391,13 +396,7 @@ class EsjzoneDownloadService:
         if end_idx < start_idx:
             raise ValueError("结束章节不能小于起始章节。")
 
-        selected = book.chapters[start_idx : end_idx + 1]
-        max_count = self._max_chapters_per_download()
-        if max_count > 0 and len(selected) > max_count:
-            raise ValueError(
-                f"本次将下载 {len(selected)} 章，超过配置限制 {max_count} 章。"
-            )
-        return selected
+        return book.chapters[start_idx : end_idx + 1]
 
     def _build_intro_chapter(
         self,
@@ -540,13 +539,6 @@ class EsjzoneDownloadService:
 
     def _max_concurrency(self) -> int:
         return _safe_int(self._download_config().get("max_threads"), 5, 1)
-
-    def _max_chapters_per_download(self) -> int:
-        return _safe_int(
-            self._download_config().get("max_chapters_per_download"),
-            120,
-            0,
-        )
 
     def _download_images(self) -> bool:
         return _bool(self._download_config().get("download_images"), True)
