@@ -179,10 +179,7 @@ class EsjzoneDownloadService:
         logger.info(f"[ESJ] checking novel status: {_safe_url_for_log(normalized_url)}")
         response = await self._request(normalized_url, user_key=user_key)
         status = parse_novel_status(response.text, normalized_url)
-        logger.info(
-            f"[ESJ] status parsed: {status.get('title')}, "
-            f"latest={status.get('latest_chapter')}"
-        )
+        logger.info(f"[ESJ] status parsed: {_safe_url_for_log(normalized_url)}")
         return status
 
     async def get_favorites(
