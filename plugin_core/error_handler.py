@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
 
 
 class ErrorCategory(Enum):
     """错误分类"""
+
     NETWORK = "network"  # 网络错误（超时、连接失败）
     PERMISSION = "permission"  # 权限错误（需要登录、VIP 章节）
     RESOURCE = "resource"  # 资源错误（书籍不存在、章节404）
@@ -24,8 +24,8 @@ class ESJError(Exception):
         self,
         message: str,
         category: ErrorCategory = ErrorCategory.UNKNOWN,
-        original: Optional[Exception] = None,
-        user_message: Optional[str] = None,
+        original: Exception | None = None,
+        user_message: str | None = None,
     ):
         super().__init__(message)
         self.message = message
@@ -37,7 +37,7 @@ class ESJError(Exception):
 class NetworkError(ESJError):
     """网络相关错误"""
 
-    def __init__(self, message: str, original: Optional[Exception] = None):
+    def __init__(self, message: str, original: Exception | None = None):
         super().__init__(
             message,
             category=ErrorCategory.NETWORK,
@@ -49,7 +49,7 @@ class NetworkError(ESJError):
 class PermissionError(ESJError):
     """权限相关错误"""
 
-    def __init__(self, message: str, original: Optional[Exception] = None):
+    def __init__(self, message: str, original: Exception | None = None):
         super().__init__(
             message,
             category=ErrorCategory.PERMISSION,
@@ -61,7 +61,7 @@ class PermissionError(ESJError):
 class ResourceNotFoundError(ESJError):
     """资源不存在错误"""
 
-    def __init__(self, message: str, original: Optional[Exception] = None):
+    def __init__(self, message: str, original: Exception | None = None):
         super().__init__(
             message,
             category=ErrorCategory.RESOURCE,
@@ -73,7 +73,7 @@ class ResourceNotFoundError(ESJError):
 class LimitExceededError(ESJError):
     """限制超出错误"""
 
-    def __init__(self, message: str, original: Optional[Exception] = None):
+    def __init__(self, message: str, original: Exception | None = None):
         super().__init__(
             message,
             category=ErrorCategory.LIMIT,
@@ -85,7 +85,7 @@ class LimitExceededError(ESJError):
 class ParsingError(ESJError):
     """解析错误"""
 
-    def __init__(self, message: str, original: Optional[Exception] = None):
+    def __init__(self, message: str, original: Exception | None = None):
         super().__init__(
             message,
             category=ErrorCategory.PARSING,
@@ -111,13 +111,17 @@ def classify_error(exc: Exception) -> ErrorCategory:
     exc_message = str(exc).lower()
 
     # 网络错误
-    if any(keyword in exc_name for keyword in ["timeout", "connect", "network", "httpx"]):
+    if any(
+        keyword in exc_name for keyword in ["timeout", "connect", "network", "httpx"]
+    ):
         return ErrorCategory.NETWORK
     if any(keyword in exc_message for keyword in ["timeout", "连接", "network"]):
         return ErrorCategory.NETWORK
 
     # 权限错误
-    if any(keyword in exc_message for keyword in ["登录", "login", "权限", "permission"]):
+    if any(
+        keyword in exc_message for keyword in ["登录", "login", "权限", "permission"]
+    ):
         return ErrorCategory.PERMISSION
     if "401" in exc_message or "403" in exc_message:
         return ErrorCategory.PERMISSION
@@ -188,7 +192,11 @@ def should_retry(exc: Exception) -> bool:
         return True
 
     # 权限错误、资源错误、解析错误不应重试
-    if category in {ErrorCategory.PERMISSION, ErrorCategory.RESOURCE, ErrorCategory.PARSING}:
+    if category in {
+        ErrorCategory.PERMISSION,
+        ErrorCategory.RESOURCE,
+        ErrorCategory.PARSING,
+    }:
         return False
 
     # 未知错误默认重试

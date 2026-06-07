@@ -14,6 +14,7 @@ from astrbot.api import logger
 @dataclass
 class DownloadRecord:
     """下载记录"""
+
     book_id: str
     book_title: str
     format: str  # epub or txt
@@ -61,12 +62,9 @@ class StatisticsManager:
             return
 
         try:
-            with open(self.history_file, 'r', encoding='utf-8') as f:
+            with open(self.history_file, encoding="utf-8") as f:
                 data = json.load(f)
-                self.records = [
-                    DownloadRecord.from_dict(record)
-                    for record in data
-                ]
+                self.records = [DownloadRecord.from_dict(record) for record in data]
             logger.debug(f"[ESJ] 加载了 {len(self.records)} 条下载历史")
         except Exception as exc:
             logger.warning(f"[ESJ] 加载下载历史失败: {exc}")
@@ -75,7 +73,7 @@ class StatisticsManager:
         """保存下载历史"""
         try:
             data = [record.to_dict() for record in self.records]
-            with open(self.history_file, 'w', encoding='utf-8') as f:
+            with open(self.history_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             logger.debug(f"[ESJ] 保存了 {len(self.records)} 条下载历史")
         except Exception as exc:
@@ -87,9 +85,7 @@ class StatisticsManager:
         self._save_history()
 
     def get_records(
-        self,
-        user_key: str | None = None,
-        limit: int = 50
+        self, user_key: str | None = None, limit: int = 50
     ) -> list[DownloadRecord]:
         """获取下载记录"""
         filtered = self.records
@@ -101,21 +97,23 @@ class StatisticsManager:
 
     def get_statistics(self, user_key: str | None = None) -> dict[str, Any]:
         """获取统计信息"""
-        records = self.records if not user_key else [
-            r for r in self.records if r.user_key == user_key
-        ]
+        records = (
+            self.records
+            if not user_key
+            else [r for r in self.records if r.user_key == user_key]
+        )
 
         if not records:
             return {
-                'total_downloads': 0,
-                'success_count': 0,
-                'failed_count': 0,
-                'success_rate': 0.0,
-                'total_chapters': 0,
-                'total_size_mb': 0.0,
-                'total_duration_hours': 0.0,
-                'avg_duration_minutes': 0.0,
-                'format_stats': {},
+                "total_downloads": 0,
+                "success_count": 0,
+                "failed_count": 0,
+                "success_rate": 0.0,
+                "total_chapters": 0,
+                "total_size_mb": 0.0,
+                "total_duration_hours": 0.0,
+                "avg_duration_minutes": 0.0,
+                "format_stats": {},
             }
 
         total = len(records)
@@ -132,27 +130,31 @@ class StatisticsManager:
             format_count[fmt] = format_count.get(fmt, 0) + 1
 
         return {
-            'total_downloads': total,
-            'success_count': success,
-            'failed_count': failed,
-            'success_rate': (success / total * 100) if total > 0 else 0.0,
-            'total_chapters': total_chapters,
-            'total_size_mb': total_bytes / (1024 * 1024),
-            'total_duration_hours': total_duration / 3600,
-            'avg_duration_minutes': (total_duration / success / 60) if success > 0 else 0.0,
-            'format_stats': format_count,
+            "total_downloads": total,
+            "success_count": success,
+            "failed_count": failed,
+            "success_rate": (success / total * 100) if total > 0 else 0.0,
+            "total_chapters": total_chapters,
+            "total_size_mb": total_bytes / (1024 * 1024),
+            "total_duration_hours": total_duration / 3600,
+            "avg_duration_minutes": (total_duration / success / 60)
+            if success > 0
+            else 0.0,
+            "format_stats": format_count,
         }
 
-    def get_recent_books(self, user_key: str | None = None, limit: int = 10) -> list[dict[str, Any]]:
+    def get_recent_books(
+        self, user_key: str | None = None, limit: int = 10
+    ) -> list[dict[str, Any]]:
         """获取最近下载的书籍"""
         records = self.get_records(user_key, limit)
         return [
             {
-                'title': r.book_title,
-                'format': r.format,
-                'chapters': r.chapters,
-                'time': time.strftime('%Y-%m-%d %H:%M', time.localtime(r.timestamp)),
-                'success': r.success,
+                "title": r.book_title,
+                "format": r.format,
+                "chapters": r.chapters,
+                "time": time.strftime("%Y-%m-%d %H:%M", time.localtime(r.timestamp)),
+                "success": r.success,
             }
             for r in records
         ]
@@ -190,7 +192,7 @@ class StatisticsManager:
             "格式统计:",
         ]
 
-        for fmt, count in stats['format_stats'].items():
+        for fmt, count in stats["format_stats"].items():
             lines.append(f"  {fmt.upper()}: {count} 本")
 
         lines.append("=" * 40)

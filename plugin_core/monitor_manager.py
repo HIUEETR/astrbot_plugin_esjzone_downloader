@@ -7,7 +7,7 @@ import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from astrbot.api import logger
 
@@ -15,6 +15,7 @@ from astrbot.api import logger
 @dataclass
 class MonitorEntry:
     """监控条目"""
+
     book_id: str
     url: str
     title: str
@@ -33,11 +34,12 @@ class MonitorEntry:
 @dataclass
 class MonitorHistory:
     """监控历史记录"""
+
     book_id: str
     check_time: int
     success: bool
     latest_chapter: str
-    error_message: Optional[str] = None
+    error_message: str | None = None
     new_chapters: int = 0
 
 
@@ -106,7 +108,7 @@ class MonitorManager:
         # 连续失败次数影响
         if entry.fail_count > 0:
             # 失败越多，间隔越长（指数退避）
-            backoff = min(2 ** entry.fail_count, 8)
+            backoff = min(2**entry.fail_count, 8)
             return min(self.base_interval * backoff, self.max_interval)
 
         # 根据更新频率调整
@@ -146,7 +148,7 @@ class MonitorManager:
         success: bool,
         latest_chapter: str = "",
         new_chapters: int = 0,
-        error_message: Optional[str] = None,
+        error_message: str | None = None,
     ) -> None:
         """
         记录检查结果
@@ -186,9 +188,9 @@ class MonitorManager:
 
     async def get_batch_to_check(
         self,
-        entries: List[MonitorEntry],
+        entries: list[MonitorEntry],
         max_batch_size: int = 10,
-    ) -> List[MonitorEntry]:
+    ) -> list[MonitorEntry]:
         """
         获取待检查的批次
 
@@ -204,7 +206,7 @@ class MonitorManager:
         Returns:
             待检查的条目列表
         """
-        to_check: List[tuple[int, MonitorEntry]] = []
+        to_check: list[tuple[int, MonitorEntry]] = []
 
         for entry in entries:
             if not await self.should_check(entry):
@@ -235,9 +237,9 @@ class MonitorManager:
 
     async def get_history(
         self,
-        book_id: Optional[str] = None,
+        book_id: str | None = None,
         limit: int = 100,
-    ) -> List[MonitorHistory]:
+    ) -> list[MonitorHistory]:
         """
         获取监控历史
 
@@ -306,7 +308,8 @@ class MonitorManager:
 
                 old_count = len(data)
                 data = [
-                    item for item in data
+                    item
+                    for item in data
                     if isinstance(item, dict) and item.get("check_time", 0) >= cutoff
                 ]
                 new_count = len(data)
@@ -314,7 +317,9 @@ class MonitorManager:
                 if new_count < old_count:
                     self._write_json(self.history_path, data)
                     removed = old_count - new_count
-                    logger.info(f"[ESJ] Cleaned up {removed} old monitor history records")
+                    logger.info(
+                        f"[ESJ] Cleaned up {removed} old monitor history records"
+                    )
                     return removed
 
                 return 0
@@ -361,7 +366,7 @@ class MonitorManager:
             encoding="utf-8",
         )
 
-    async def get_statistics(self) -> Dict[str, Any]:
+    async def get_statistics(self) -> dict[str, Any]:
         """
         获取监控统计信息
 
@@ -377,10 +382,7 @@ class MonitorManager:
 
         # 最近 24 小时的检查
         now = int(time.time())
-        recent_checks = [
-            h for h in histories
-            if (now - h.check_time) < 86400
-        ]
+        recent_checks = [h for h in histories if (now - h.check_time) < 86400]
 
         return {
             "total_checks": total_checks,

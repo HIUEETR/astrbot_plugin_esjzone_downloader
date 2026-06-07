@@ -13,11 +13,11 @@ from dataclasses import dataclass, field
 from http.cookiejar import Cookie
 from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import unquote, urljoin, urlparse
 
 import httpx
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from PIL import Image
 
 from astrbot.api import logger
@@ -374,9 +374,10 @@ class EsjzoneDownloadService:
         user_key: str | None,
     ) -> tuple[str, int]:
         soup = BeautifulSoup(html, "html.parser")
-        image_jobs: list[tuple[Any, str, str]] = []
+        image_jobs: list[tuple[Tag, str, str]] = []
         for img in soup.find_all("img"):
-            src = (img.get("src") or "").strip()
+            img = cast(Tag, img)
+            src = str(img.get("src") or "").strip()
             if not src or src.startswith("images/"):
                 continue
             image_url = urljoin(chapter.url, src)
@@ -399,7 +400,7 @@ class EsjzoneDownloadService:
 
         downloaded = 0
 
-        async def fetch_image(job: tuple[Any, str, str]) -> None:
+        async def fetch_image(job: tuple[Tag, str, str]) -> None:
             nonlocal downloaded
             _img, image_url, filename = job
             try:
@@ -793,15 +794,13 @@ class EsjzoneDownloadService:
                 '<img src="images/cover.png" alt="封面"/>'
                 "</div>"
             )
-        intro_content.extend(
-            [
-                f"<h1>{html.escape(book.title)}</h1>",
-                f"<p><strong>作者:</strong> {html.escape(book.author)}</p>",
-                "<p><strong>源网址:</strong> "
-                f'<a href="{html.escape(book.url, quote=True)}">'
-                f"{html.escape(book.url)}</a></p>",
-            ]
-        )
+        intro_content.extend([
+            f"<h1>{html.escape(book.title)}</h1>",
+            f"<p><strong>作者:</strong> {html.escape(book.author)}</p>",
+            "<p><strong>源网址:</strong> "
+            f'<a href="{html.escape(book.url, quote=True)}">'
+            f"{html.escape(book.url)}</a></p>",
+        ])
         if book.tags:
             intro_content.append(
                 f"<p><strong>Tags:</strong> {html.escape(', '.join(book.tags))}</p>"
@@ -1119,6 +1118,7 @@ def _sanitize_html(raw_html: str) -> str:
     blocked_tags = {"script", "style", "iframe", "object", "embed", "form"}
     soup = BeautifulSoup(raw_html or "", "html.parser")
     for tag in list(soup.find_all(True)):
+        tag = cast(Tag, tag)
         if tag.name in blocked_tags:
             tag.decompose()
             continue
@@ -1306,7 +1306,7 @@ def _cookie_from_record(record: dict[str, Any]) -> Cookie:
         discard=expires_int is None,
         comment=None,
         comment_url=None,
-        rest={"HttpOnly": None} if record.get("httponly") else {},
+        rest={"HttpOnly": ""} if record.get("httponly") else {},
         rfc2109=False,
     )
 

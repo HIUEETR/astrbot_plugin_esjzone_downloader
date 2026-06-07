@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from typing import cast
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup, Tag
@@ -12,6 +13,11 @@ def _get_text_or_empty(node: Tag | None) -> str:
     if node is None:
         return ""
     return node.get_text(strip=True)
+
+
+def _get_str_attr(node: Tag, attr: str) -> str | None:
+    value = node.get(attr)
+    return value if isinstance(value, str) else None
 
 
 def _guess_chapter_title(a_elem: Tag) -> str:
@@ -34,7 +40,7 @@ def parse_book(html: str, url: str) -> Book:
         if li.text and "作者:" in li.text:
             a = li.find("a")
             if a:
-                author = _get_text_or_empty(a)
+                author = _get_text_or_empty(cast(Tag, a))
             break
 
     intro_dom = soup.select_one(".description")
@@ -45,7 +51,7 @@ def parse_book(html: str, url: str) -> Book:
     cover_node = soup.select_one(".product-gallery img")
     if cover_node is None:
         cover_node = soup.select_one(".book-detail img")
-    cover_url = cover_node.get("src") if cover_node else None
+    cover_url = _get_str_attr(cover_node, "src") if cover_node else None
     if cover_url and not cover_url.startswith("http"):
         cover_url = urljoin(url, cover_url)
 
@@ -84,7 +90,8 @@ def parse_book(html: str, url: str) -> Book:
 
     # ESJ chapter links can be nested under h2/span/details wrappers.
     for a in chapter_container.find_all("a"):
-        href = (a.get("href") or "").strip()
+        a = cast(Tag, a)
+        href = _get_str_attr(a, "href") or ""
         if not href or href in {"#", "javascript:void(0)"}:
             continue
 
@@ -100,7 +107,7 @@ def parse_book(html: str, url: str) -> Book:
             details_id = id(details_node)
             if details_id not in details_section_map:
                 section_index += 1
-                summary = details_node.find("summary")
+                summary = cast(Tag | None, details_node.find("summary"))
                 section_name = _get_text_or_empty(summary) or None
                 details_section_map[details_id] = (section_index, section_name)
 
@@ -154,7 +161,7 @@ def parse_favorites(html: str) -> tuple[list[dict[str, str]], int]:
             continue
 
         title = title_elem.get_text(strip=True)
-        url = title_elem.get("href")
+        url = _get_str_attr(title_elem, "href")
         if url and not url.startswith("http"):
             url = f"https://www.esjzone.one{url}"
 
@@ -177,15 +184,13 @@ def parse_favorites(html: str) -> tuple[list[dict[str, str]], int]:
             else ""
         )
 
-        novels.append(
-            {
-                "title": title,
-                "url": url,
-                "latest_chapter": latest_chapter,
-                "last_viewed": last_viewed,
-                "update_time": update_time,
-            }
-        )
+        novels.append({
+            "title": title,
+            "url": url,
+            "latest_chapter": latest_chapter,
+            "last_viewed": last_viewed,
+            "update_time": update_time,
+        })
 
     total_pages = 1
     script_content = ""
@@ -225,7 +230,7 @@ def parse_novel_status(html: str, url: str) -> dict[str, str]:
     if chapter_container:
         all_links = chapter_container.find_all("a")
         if all_links:
-            last_link = all_links[-1]
+            last_link = cast(Tag, all_links[-1])
             latest_chapter = _guess_chapter_title(last_link)
 
     return {

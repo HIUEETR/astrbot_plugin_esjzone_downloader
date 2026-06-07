@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Optional
 
 from astrbot.api import logger
 
@@ -13,6 +12,7 @@ from astrbot.api import logger
 @dataclass
 class PerformanceMetrics:
     """性能指标数据类"""
+
     start_time: float = field(default_factory=time.time)
     end_time: float = 0.0
     total_chapters: int = 0

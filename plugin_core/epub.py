@@ -14,7 +14,8 @@ from .model import Book, Chapter
 
 def escape_xml(text: str) -> str:
     return (
-        text.replace("&", "&amp;")
+        text
+        .replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
         .replace('"', "&quot;")
@@ -183,9 +184,9 @@ def build_epub(
         spine = "\n    ".join(spine_items)
         now = _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        tags_xml = "\n    ".join(
-            [f"<dc:subject>{escape_xml(tag)}</dc:subject>" for tag in book.tags]
-        )
+        tags_xml = "\n    ".join([
+            f"<dc:subject>{escape_xml(tag)}</dc:subject>" for tag in book.tags
+        ])
 
         description_xml = (
             f"<dc:description>{escape_xml(book.introduction)}</dc:description>"

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Callable, List, TypeVar
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 from astrbot.api import logger
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 class BatchProcessor:
@@ -37,10 +38,10 @@ class BatchProcessor:
 
     async def process_in_batches(
         self,
-        items: List[T],
-        processor: Callable[[List[T]], Any],
+        items: list[T],
+        processor: Callable[[list[T]], Any],
         on_batch_complete: Callable[[int, int], None] | None = None,
-    ) -> List[Any]:
+    ) -> list[Any]:
         """
         分批处理数据
 

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Callable, List, TypeVar
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 from astrbot.api import logger
 
-T = TypeVar('T')
-R = TypeVar('R')
+T = TypeVar("T")
+R = TypeVar("R")
 
 
 class AdaptiveSemaphore:
@@ -207,7 +208,7 @@ class TaskPool:
         self.max_workers = max_workers
         self._task_queue: asyncio.Queue = asyncio.Queue()
         self._result_queue: asyncio.Queue = asyncio.Queue()
-        self._workers: List[asyncio.Task] = []
+        self._workers: list[asyncio.Task] = []
         self._running = False
 
     async def start(self) -> None:
@@ -217,8 +218,7 @@ class TaskPool:
 
         self._running = True
         self._workers = [
-            asyncio.create_task(self._worker(i))
-            for i in range(self.max_workers)
+            asyncio.create_task(self._worker(i)) for i in range(self.max_workers)
         ]
         logger.info(f"[ESJ] Task pool started with {self.max_workers} workers")
 
@@ -310,9 +310,9 @@ class TaskPool:
 
 
 async def gather_with_concurrency(
-    tasks: List[Callable[[], Any]],
+    tasks: list[Callable[[], Any]],
     max_concurrency: int = 5,
-) -> List[Any]:
+) -> list[Any]:
     """
     限制并发数的 gather
 

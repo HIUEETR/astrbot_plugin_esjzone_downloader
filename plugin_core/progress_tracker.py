@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, Optional
 
 
 @dataclass
 class DownloadProgress:
     """下载进度数据"""
+
     total_chapters: int = 0
     completed_chapters: int = 0
     failed_chapters: int = 0
@@ -69,8 +70,7 @@ class DownloadProgress:
         if self.bytes_downloaded > 0:
             mb_downloaded = self.bytes_downloaded / (1024 * 1024)
             lines.append(
-                f"已下载: {mb_downloaded:.2f} MB "
-                f"({self.download_rate_kbps:.1f} KB/s)"
+                f"已下载: {mb_downloaded:.2f} MB ({self.download_rate_kbps:.1f} KB/s)"
             )
 
         elapsed_min = int(self.elapsed_seconds / 60)
@@ -92,7 +92,7 @@ class ProgressTracker:
 
     def __init__(
         self,
-        progress_callback: Optional[Callable[[str], None]] = None,
+        progress_callback: Callable[[str], None] | None = None,
         update_interval: float = 5.0,
     ):
         """
@@ -107,7 +107,7 @@ class ProgressTracker:
         self.update_interval = update_interval
         self._lock = asyncio.Lock()
         self._last_update = 0.0
-        self._update_task: Optional[asyncio.Task] = None
+        self._update_task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
 
     async def start(self, total_chapters: int, total_images: int = 0) -> None:

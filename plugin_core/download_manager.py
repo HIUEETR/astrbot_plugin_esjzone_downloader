@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, cast
 
 from astrbot.api import logger
 
@@ -13,9 +14,10 @@ from astrbot.api import logger
 @dataclass
 class Task:
     """基础任务类"""
+
     url: str
     retry_count: int = 0
-    callback: Optional[Callable] = None
+    callback: Callable | None = None
     args: tuple = field(default_factory=tuple)
     kwargs: dict = field(default_factory=dict)
 
@@ -23,12 +25,14 @@ class Task:
 @dataclass
 class ChapterTask(Task):
     """章节下载任务"""
+
     chapter_obj: Any = None
 
 
 @dataclass
 class ImageTask(Task):
     """图片下载任务"""
+
     chapter_obj: Any = None
     image_filename: str = ""
 
@@ -53,7 +57,7 @@ class AsyncDownloadManager:
         # 控制标志
         self._stop_event = asyncio.Event()
         self._workers: list[asyncio.Task] = []
-        self._monitor_task: Optional[asyncio.Task] = None
+        self._monitor_task: asyncio.Task | None = None
 
         # 统计数据
         self._lock = asyncio.Lock()
@@ -80,8 +84,8 @@ class AsyncDownloadManager:
         self.retry_delays = dl_config.get("retry_delays", [10, 15, 30])
 
         # 回调
-        self.on_progress: Optional[Callable[[str, int, int], None]] = None
-        self.on_rate_update: Optional[Callable[[str, int], None]] = None
+        self.on_progress: Callable[[str, int, int], None] | None = None
+        self.on_rate_update: Callable[[str, int], None] | None = None
 
         self._prefer_image = False
 
@@ -91,7 +95,9 @@ class AsyncDownloadManager:
         async with self._lock:
             self.total_chapters += 1
             if self.on_progress:
-                self.on_progress("chapter", self.completed_chapters, self.total_chapters)
+                self.on_progress(
+                    "chapter", self.completed_chapters, self.total_chapters
+                )
 
     async def add_image_task(self, task: ImageTask) -> None:
         """添加单个图片任务"""
@@ -132,7 +138,10 @@ class AsyncDownloadManager:
             worker.cancel()
         if self._monitor_task:
             self._monitor_task.cancel()
-        await asyncio.gather(*self._workers, self._monitor_task, return_exceptions=True)
+        tasks_to_cancel = [*self._workers]
+        if self._monitor_task is not None:
+            tasks_to_cancel.append(self._monitor_task)
+        await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
 
     async def wait_until_complete(self) -> None:
         """等待所有任务完成"""
@@ -149,6 +158,9 @@ class AsyncDownloadManager:
     async def _worker_loop(self, worker_id: int) -> None:
         """工作协程循环"""
         while not self._stop_event.is_set():
+            task: Task | None = None
+            task_type: str | None = None
+
             # 降级模式：只允许 worker-0 运行
             if self.is_downgraded and worker_id != 0:
                 await asyncio.sleep(1)
@@ -156,7 +168,7 @@ class AsyncDownloadManager:
 
             try:
                 task, task_type = await self._dequeue_task()
-                if not task:
+                if task is None or task_type is None:
                     await asyncio.sleep(0.05)
                     continue
 
@@ -197,15 +209,19 @@ class AsyncDownloadManager:
                 if self.on_progress:
                     self.on_progress(
                         task_type,
-                        self.completed_chapters if task_type == "chapter" else self.completed_images,
-                        self.total_chapters if task_type == "chapter" else self.total_images,
+                        self.completed_chapters
+                        if task_type == "chapter"
+                        else self.completed_images,
+                        self.total_chapters
+                        if task_type == "chapter"
+                        else self.total_images,
                     )
 
         except Exception as exc:
             logger.error(f"[ESJ] 任务失败: {task.url}, 错误: {exc}")
             await self._handle_failure(task, task_type, exc)
 
-    async def _dequeue_task(self) -> tuple[Optional[Task], Optional[str]]:
+    async def _dequeue_task(self) -> tuple[Task | None, str | None]:
         """从队列取出任务（章节和图片交替）"""
         if self.chapter_queue.empty() and self.image_queue.empty():
             return None, None
@@ -250,7 +266,9 @@ class AsyncDownloadManager:
         except asyncio.QueueEmpty:
             return None, None
 
-    async def _handle_failure(self, task: Task, task_type: str, error: Exception) -> None:
+    async def _handle_failure(
+        self, task: Task, task_type: str, error: Exception
+    ) -> None:
         """处理任务失败"""
         async with self._lock:
             self.consecutive_errors += 1
@@ -282,8 +300,12 @@ class AsyncDownloadManager:
                 if self.on_progress:
                     self.on_progress(
                         task_type,
-                        self.completed_chapters if task_type == "chapter" else self.completed_images,
-                        self.total_chapters if task_type == "chapter" else self.total_images,
+                        self.completed_chapters
+                        if task_type == "chapter"
+                        else self.completed_images,
+                        self.total_chapters
+                        if task_type == "chapter"
+                        else self.total_images,
                     )
 
     async def _requeue_task(self, task: Task, task_type: str, delay: float) -> None:
@@ -291,9 +313,9 @@ class AsyncDownloadManager:
         await asyncio.sleep(delay)
         task.retry_count += 1
         if task_type == "chapter":
-            await self.chapter_queue.put(task)
+            await self.chapter_queue.put(cast(ChapterTask, task))
         else:
-            await self.image_queue.put(task)
+            await self.image_queue.put(cast(ImageTask, task))
 
         async with self._lock:
             self.pending_retries -= 1

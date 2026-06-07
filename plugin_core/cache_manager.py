@@ -6,7 +6,7 @@ import asyncio
 import json
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 
 class CacheManager:
@@ -45,7 +45,7 @@ class CacheManager:
         # 确保缓存目录存在
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-    async def get(self, key: str) -> Optional[Any]:
+    async def get(self, key: str) -> Any | None:
         """
         获取缓存
 
@@ -95,7 +95,7 @@ class CacheManager:
         self,
         key: str,
         value: Any,
-        ttl: Optional[float] = None,
+        ttl: float | None = None,
         memory_only: bool = False,
     ) -> None:
         """
@@ -159,7 +159,8 @@ class CacheManager:
         # 清理内存缓存
         async with self._lock:
             expired_keys = [
-                key for key, (_, expires_at) in self._memory_cache.items()
+                key
+                for key, (_, expires_at) in self._memory_cache.items()
                 if now >= expires_at
             ]
             for key in expired_keys:
@@ -220,5 +221,6 @@ class CacheManager:
         """获取缓存文件路径"""
         # 使用 key 的 hash 作为文件名
         import hashlib
+
         key_hash = hashlib.sha256(key.encode("utf-8")).hexdigest()
         return self.cache_dir / f"{key_hash}.json"

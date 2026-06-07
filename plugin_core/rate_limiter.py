@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Optional
 
 
 class RateLimiter:
@@ -20,7 +19,7 @@ class RateLimiter:
     def __init__(
         self,
         rate_limit_bytes_per_second: int = 0,
-        burst_size: Optional[int] = None,
+        burst_size: int | None = None,
     ):
         """
         初始化速率限制器

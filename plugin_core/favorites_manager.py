@@ -76,7 +76,7 @@ class FavoritesManager:
                 await asyncio.to_thread(
                     lambda: self.cache_file.write_text(
                         json.dumps(self.cache, ensure_ascii=False, indent=2),
-                        encoding="utf-8"
+                        encoding="utf-8",
                     )
                 )
                 logger.debug("[ESJ] 收藏缓存已保存")
@@ -97,10 +97,7 @@ class FavoritesManager:
         return self._updated_flags.get(sort_by, False)
 
     async def ensure_updated(
-        self,
-        sort_by: str,
-        fetch_callback: Any,
-        force: bool = False
+        self, sort_by: str, fetch_callback: Any, force: bool = False
     ) -> None:
         """
         确保数据已更新（会话内仅更新一次，除非 force=True）
@@ -129,11 +126,7 @@ class FavoritesManager:
             logger.error(f"[ESJ] 更新收藏列表失败: {exc}")
             raise
 
-    async def _update_favorites(
-        self,
-        sort_by: str,
-        fetch_callback: Any
-    ) -> None:
+    async def _update_favorites(self, sort_by: str, fetch_callback: Any) -> None:
         """执行更新逻辑（异步并发获取）"""
         # 获取第一页以确定总页数
         novels_p1, total_pages = await fetch_callback(1, sort_by)
@@ -157,8 +150,7 @@ class FavoritesManager:
 
             # 并发获取
             page_results = await asyncio.gather(
-                *(fetch_page(p) for p in pages_to_fetch),
-                return_exceptions=True
+                *(fetch_page(p) for p in pages_to_fetch), return_exceptions=True
             )
 
             for result in page_results:
@@ -185,11 +177,7 @@ class FavoritesManager:
             self._updated_flags = {"lastest": False, "collected": False}
         logger.info(f"[ESJ] 收藏缓存已清除: {sort_by or '全部'}")
 
-    async def invalidate_and_update(
-        self,
-        sort_by: str,
-        fetch_callback: Any
-    ) -> None:
+    async def invalidate_and_update(self, sort_by: str, fetch_callback: Any) -> None:
         """使缓存失效并重新更新"""
         self._updated_flags[sort_by] = False
         await self.ensure_updated(sort_by, fetch_callback, force=True)

@@ -19,19 +19,38 @@ def sanitize_filename(filename: str, max_length: int = 120) -> str:
     """
     # Windows 保留文件名
     reserved_names = {
-        "CON", "PRN", "AUX", "NUL",
-        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        "COM1",
+        "COM2",
+        "COM3",
+        "COM4",
+        "COM5",
+        "COM6",
+        "COM7",
+        "COM8",
+        "COM9",
+        "LPT1",
+        "LPT2",
+        "LPT3",
+        "LPT4",
+        "LPT5",
+        "LPT6",
+        "LPT7",
+        "LPT8",
+        "LPT9",
     }
 
     # 移除非法字符
-    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '', filename)
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", filename)
 
     # 移除前后空格和点
-    cleaned = cleaned.strip(' .')
+    cleaned = cleaned.strip(" .")
 
     # 检查是否为保留名称
-    name_without_ext = cleaned.split('.')[0].upper()
+    name_without_ext = cleaned.split(".")[0].upper()
     if name_without_ext in reserved_names:
         cleaned = f"_{cleaned}"
 
@@ -58,7 +77,7 @@ def truncate_text(text: str, max_length: int, suffix: str = "...") -> str:
     """
     if len(text) <= max_length:
         return text
-    return text[:max_length - len(suffix)] + suffix
+    return text[: max_length - len(suffix)] + suffix
 
 
 def format_file_size(size_bytes: int) -> str:
@@ -71,11 +90,12 @@ def format_file_size(size_bytes: int) -> str:
     Returns:
         格式化的文件大小字符串
     """
-    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-        if size_bytes < 1024.0:
-            return f"{size_bytes:.1f} {unit}"
-        size_bytes /= 1024.0
-    return f"{size_bytes:.1f} PB"
+    size = float(size_bytes)
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
+        if size < 1024.0:
+            return f"{size:.1f} {unit}"
+        size /= 1024.0
+    return f"{size:.1f} PB"
 
 
 def split_text_by_length(text: str, max_length: int = 1500) -> list[str]:
@@ -126,7 +146,7 @@ def extract_book_id_from_url(url: str) -> str | None:
     Returns:
         书籍 ID 或 None
     """
-    match = re.search(r'/detail/(\d+)\.html', url)
+    match = re.search(r"/detail/(\d+)\.html", url)
     return match.group(1) if match else None
 
 
@@ -161,9 +181,9 @@ def normalize_whitespace(text: str) -> str:
         规范化后的文本
     """
     # 替换多个空格为单个空格
-    text = re.sub(r' +', ' ', text)
+    text = re.sub(r" +", " ", text)
     # 替换多个换行为双换行
-    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
 
