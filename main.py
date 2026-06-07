@@ -128,29 +128,27 @@ class EsjzoneDownloaderPlugin(Star):
     async def help(self, event: AstrMessageEvent):
         """查看 ESJ Zone 下载插件帮助。"""
         yield event.plain_result(
-            "\n".join(
-                [
-                    "ESJ Zone 小说下载",
-                    "/esj i <小说URL或编号> - 合并转发书籍简介、编号和章节数",
-                    "/esj f [lastest|collected] [页码] - 合并转发收藏列表，默认 lastest",
-                    "/esj c <小说URL或编号> - 查看最近更新状态",
-                    "/esj d <小说URL或编号> [epub|txt] [起始章节] [结束章节] - 下载并发送文件",
-                    "/esj l <邮箱> <密码> - 私聊登录并保存当前用户 Cookie",
-                    "/esj logout - 私聊清除当前用户 Cookie",
-                    "/esj cfg [配置项] [值] - 查看或修改插件配置",
-                    "/esj m add <小说URL或编号> - 添加当前会话的更新监控",
-                    "/esj m list - 查看当前会话的监控列表",
-                    "/esj m rm <小说URL或编号|all> - 移除监控",
-                    "/esj m check - 立即检查当前会话监控更新",
-                    "",
-                    "完整指令仍可使用：info/fav/check/download/login/config/monitor。",
-                    "下载未指定格式时默认 EPUB；也支持省略格式直接写章节范围。",
-                    "示例：/esj d 123",
-                    "示例：/esj d 123 1 20",
-                    "示例：/esj d 123 txt",
-                    "示例：/esj cfg file_naming_mode book_id",
-                ]
-            )
+            "\n".join([
+                "ESJ Zone 小说下载",
+                "/esj i <小说URL或编号> - 合并转发书籍简介、编号和章节数",
+                "/esj f [lastest|collected] [页码] - 合并转发收藏列表，默认 lastest",
+                "/esj c <小说URL或编号> - 查看最近更新状态",
+                "/esj d <小说URL或编号> [epub|txt] [起始章节] [结束章节] - 下载并发送文件",
+                "/esj l <邮箱> <密码> - 私聊登录并保存当前用户 Cookie",
+                "/esj logout - 私聊清除当前用户 Cookie",
+                "/esj cfg [配置项] [值] - 查看或修改插件配置",
+                "/esj m add <小说URL或编号> - 添加当前会话的更新监控",
+                "/esj m list - 查看当前会话的监控列表",
+                "/esj m rm <小说URL或编号|all> - 移除监控",
+                "/esj m check - 立即检查当前会话监控更新",
+                "",
+                "完整指令仍可使用：info/fav/check/download/login/config/monitor。",
+                "下载未指定格式时默认 EPUB；也支持省略格式直接写章节范围。",
+                "示例：/esj d 123",
+                "示例：/esj d 123 1 20",
+                "示例：/esj d 123 txt",
+                "示例：/esj cfg file_naming_mode book_id",
+            ])
         )
 
     @esj.command("info", alias={"i"})
@@ -166,16 +164,14 @@ class EsjzoneDownloaderPlugin(Star):
             nodes = [
                 self._node(
                     event,
-                    "\n".join(
-                        [
-                            f"标题：{book.title}",
-                            f"编号：{book_id}",
-                            f"作者：{book.author}",
-                            f"最近更新：{book.update_time or '未知'}",
-                            f"章节数：{len(book.chapters)}",
-                            f"标签：{', '.join(book.tags) if book.tags else '无'}",
-                        ]
-                    ),
+                    "\n".join([
+                        f"标题：{book.title}",
+                        f"编号：{book_id}",
+                        f"作者：{book.author}",
+                        f"最近更新：{book.update_time or '未知'}",
+                        f"章节数：{len(book.chapters)}",
+                        f"标签：{', '.join(book.tags) if book.tags else '无'}",
+                    ]),
                 )
             ]
             intro = book.introduction.strip() or "暂无简介。"
@@ -201,14 +197,12 @@ class EsjzoneDownloaderPlugin(Star):
                 f"book_id={self._safe_book_id(status.get('url') or url)}"
             )
             yield event.plain_result(
-                "\n".join(
-                    [
-                        f"标题：{status.get('title') or '未知'}",
-                        f"最新章节：{status.get('latest_chapter') or '未知'}",
-                        f"更新时间：{status.get('update_time') or '未知'}",
-                        f"链接：{status.get('url') or url}",
-                    ]
-                )
+                "\n".join([
+                    f"标题：{status.get('title') or '未知'}",
+                    f"最新章节：{status.get('latest_chapter') or '未知'}",
+                    f"更新时间：{status.get('update_time') or '未知'}",
+                    f"链接：{status.get('url') or url}",
+                ])
             )
         except Exception as exc:
             logger.warning(f"[ESJ] check failed: {_safe_exception(exc)}")
@@ -253,18 +247,14 @@ class EsjzoneDownloaderPlugin(Star):
                     f"[ESJ] download command succeeded: book_id={book_id}, "
                     f"file={result.output_path.name}"
                 )
-                yield event.chain_result(
-                    [
-                        Plain(
-                            "下载完成："
-                            f"{result.book.title}\n"
-                            f"章节：{result.chapter_count}，图片：{result.image_count}"
-                        ),
-                        File(
-                            file=str(result.output_path), name=result.output_path.name
-                        ),
-                    ]
-                )
+                yield event.chain_result([
+                    Plain(
+                        "下载完成："
+                        f"{result.book.title}\n"
+                        f"章节：{result.chapter_count}，图片：{result.image_count}"
+                    ),
+                    File(file=str(result.output_path), name=result.output_path.name),
+                ])
         except Exception as exc:
             logger.warning(f"[ESJ] download failed: {_safe_exception(exc)}")
             yield event.plain_result(self._format_user_error("下载失败", exc))
@@ -353,15 +343,13 @@ class EsjzoneDownloaderPlugin(Star):
                 nodes.append(
                     self._node(
                         event,
-                        "\n".join(
-                            [
-                                f"{idx}. {novel.get('title', '未知标题')}",
-                                f"编号：{book_id}",
-                                f"最新：{novel.get('latest_chapter') or '未知'}",
-                                f"更新：{novel.get('update_time') or '未知'}",
-                                f"上次观看：{novel.get('last_viewed') or '未知'}",
-                            ]
-                        ),
+                        "\n".join([
+                            f"{idx}. {novel.get('title', '未知标题')}",
+                            f"编号：{book_id}",
+                            f"最新：{novel.get('latest_chapter') or '未知'}",
+                            f"更新：{novel.get('update_time') or '未知'}",
+                            f"上次观看：{novel.get('last_viewed') or '未知'}",
+                        ]),
                     )
                 )
             logger.info(
@@ -450,14 +438,12 @@ class EsjzoneDownloaderPlugin(Star):
                 f"book_id={entry['book_id']}"
             )
             yield event.plain_result(
-                "\n".join(
-                    [
-                        "已添加更新监控：",
-                        f"标题：{entry['title']}",
-                        f"编号：{entry['book_id']}",
-                        f"当前最新：{entry.get('latest_chapter') or '未知'}",
-                    ]
-                )
+                "\n".join([
+                    "已添加更新监控：",
+                    f"标题：{entry['title']}",
+                    f"编号：{entry['book_id']}",
+                    f"当前最新：{entry.get('latest_chapter') or '未知'}",
+                ])
             )
         except Exception as exc:
             logger.warning(f"[ESJ] monitor add failed: {_safe_exception(exc)}")
@@ -670,35 +656,31 @@ class EsjzoneDownloaderPlugin(Star):
         old_index = _safe_int(entry.get("latest_index"), 0, 0)
         start_index = self._new_chapter_start_index(book, old_chapter, old_index)
 
-        entry.update(
-            {
-                "book_id": book_id,
-                "url": book.url,
-                "title": book.title,
-                "latest_chapter": latest_chapter,
-                "latest_index": latest_index,
-                "update_time": book.update_time or "",
-                "updated_at": now,
-            }
-        )
+        entry.update({
+            "book_id": book_id,
+            "url": book.url,
+            "title": book.title,
+            "latest_chapter": latest_chapter,
+            "latest_index": latest_index,
+            "update_time": book.update_time or "",
+            "updated_at": now,
+        })
 
         if not old_chapter or not latest_chapter or latest_chapter == old_chapter:
             return None
         if start_index < 1 or start_index > latest_index:
             return None
 
-        text = "\n".join(
-            [
-                "ESJ 更新提醒",
-                f"标题：{book.title}",
-                f"编号：{book_id}",
-                f"上次记录：{old_chapter or '未知'}",
-                f"当前最新：{latest_chapter}",
-                f"更新时间：{book.update_time or '未知'}",
-                f"新章节页面：{latest_url}",
-                f"下载指令：/esj d {book_id} {start_index} {latest_index}",
-            ]
-        )
+        text = "\n".join([
+            "ESJ 更新提醒",
+            f"标题：{book.title}",
+            f"编号：{book_id}",
+            f"上次记录：{old_chapter or '未知'}",
+            f"当前最新：{latest_chapter}",
+            f"更新时间：{book.update_time or '未知'}",
+            f"新章节页面：{latest_url}",
+            f"下载指令：/esj d {book_id} {start_index} {latest_index}",
+        ])
         return {"origin": str(entry.get("unified_msg_origin") or ""), "text": text}
 
     def _new_chapter_start_index(
@@ -742,9 +724,9 @@ class EsjzoneDownloaderPlugin(Star):
             return []
         data = _read_json_with_corrupt_backup(self.monitor_path)
         if isinstance(data, list):
-            return _dedupe_monitor_entries(
-                [item for item in data if isinstance(item, dict)]
-            )
+            return _dedupe_monitor_entries([
+                item for item in data if isinstance(item, dict)
+            ])
         return []
 
     def _save_monitor_entries(self, entries: list[dict[str, Any]]) -> None:
