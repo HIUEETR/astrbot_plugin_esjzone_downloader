@@ -70,6 +70,7 @@ AstrBot 插件版 ESJ Zone 小说下载器，主要面向 QQ 个人号（aiocqht
 
 - 只接受 ESJ 官方 HTTPS 详情页 URL 或纯数字书籍编号；外部域名、内网地址、非 HTTPS 地址和路径穿越格式会被拒绝。HTTP 重定向也会逐跳校验，外跳不会继续请求。
 - `/esj login`、`/esj fav`、`/esj logout` 只允许私聊使用，Cookie 按平台和发送者隔离保存。
+- 私聊登录态失效时，收藏和私聊下载会在检测到登录页后使用插件配置中的 `account.username/password` 自动重新登录并重试一次；群聊下载不会使用或刷新任何用户 Cookie。
 - Cookie 文件保存在 AstrBot 插件数据目录的 `users/<用户标识>/cookies.json` 下；文件会尝试收紧为仅运行用户可读写。该目录应按凭据处理，备份、迁移和打包前需要确认不会泄露。
 - 下载文件保存在 AstrBot 插件数据目录的 `downloads` 下，文件名会附加随机后缀以避免覆盖旧文件。
 - 监控列表保存在插件数据目录的 `monitor.json`，写入时使用临时文件原子替换；损坏的 JSON 会备份为 `*.corrupt.*`。自动检查会按批次和并发上限处理，避免监控文件过大时阻塞管理命令。

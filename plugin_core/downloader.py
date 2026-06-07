@@ -50,6 +50,10 @@ class DownloadResult:
     image_count: int
 
 
+class LoginRequiredError(ValueError):
+    """Raised when an ESJ page requires a fresh private login."""
+
+
 @dataclass(slots=True)
 class DownloadBudget:
     max_images: int
@@ -89,6 +93,7 @@ class EsjzoneDownloadService:
         self._clients: dict[str, httpx.AsyncClient] = {}
         self._client_init_lock = asyncio.Lock()
         self._cookie_locks: dict[str, asyncio.Lock] = {}
+        self._login_locks: dict[str, asyncio.Lock] = {}
         self._semaphore = asyncio.Semaphore(self._max_concurrency())
 
     def reload_config(self, config: dict[str, Any]) -> None:
@@ -198,7 +203,11 @@ class EsjzoneDownloadService:
         else:
             url = f"{ESJ_BASE_URL}/my/favorite/{page}"
 
-        response = await self._request(url, user_key=user_key)
+        response = await self._request_with_login_refresh(
+            url,
+            user_key=user_key,
+            operation="favorites",
+        )
         novels, total_pages = parse_favorites(response.text)
         logger.info(
             f"[ESJ] favorites parsed: sort={sort_by}, page={page}, "
@@ -271,9 +280,29 @@ class EsjzoneDownloadService:
         user_key: str | None,
     ) -> tuple[Book, list[Chapter], int]:
         normalized_url = self.normalize_url(url)
-        response = await self._request(normalized_url, user_key=user_key)
-        book = parse_book(response.text, normalized_url)
-        selected_chapters = self._select_chapters(book, start_chapter, end_chapter)
+        response = await self._request_with_login_refresh(
+            normalized_url,
+            user_key=user_key,
+            operation="book",
+        )
+        try:
+            book = parse_book(response.text, normalized_url)
+            selected_chapters = self._select_chapters(book, start_chapter, end_chapter)
+        except ValueError as exc:
+            if not user_key or not _can_retry_book_after_login(exc):
+                raise
+            logger.info(
+                f"[ESJ] book page parse failed after authenticated request; "
+                f"refreshing login: {_safe_url_for_log(normalized_url)}"
+            )
+            await self._refresh_login(user_key)
+            response = await self._request(normalized_url, user_key=user_key)
+            if _looks_like_login_required(response.text, str(response.url)):
+                raise LoginRequiredError(
+                    "自动重新登录失败，请在私聊使用 /esj l 邮箱 密码 重新登录。"
+                ) from exc
+            book = parse_book(response.text, normalized_url)
+            selected_chapters = self._select_chapters(book, start_chapter, end_chapter)
         logger.info(
             f"[ESJ] selected chapters: {_safe_url_for_log(normalized_url)}, "
             f"count={len(selected_chapters)}"
@@ -307,7 +336,11 @@ class EsjzoneDownloadService:
         async def fetch_chapter(chapter: Chapter) -> None:
             nonlocal image_counter
             async with self._semaphore:
-                chapter_response = await self._request(chapter.url, user_key=user_key)
+                chapter_response = await self._request_with_login_refresh(
+                    chapter.url,
+                    user_key=user_key,
+                    operation="chapter",
+                )
             title, html = parse_chapter(
                 chapter_response.text,
                 chapter.url,
@@ -504,6 +537,65 @@ class EsjzoneDownloadService:
         )
         raise last_exc
 
+    async def _request_with_login_refresh(
+        self,
+        url: str,
+        *,
+        user_key: str | None,
+        operation: str,
+        method: str = "GET",
+        timeout: float | None = None,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        response = await self._request(
+            url,
+            method=method,
+            timeout=timeout,
+            user_key=user_key,
+            **kwargs,
+        )
+        if not _looks_like_login_required(response.text, str(response.url)):
+            return response
+
+        if not user_key:
+            raise LoginRequiredError("此内容需要登录，请在私聊登录后重试。")
+
+        scope = self._client_scope(user_key)
+        logger.info(
+            f"[ESJ] login refresh required: operation={operation}, "
+            f"scope={_hash_for_log(scope)}"
+        )
+        await self._refresh_login(user_key)
+        response = await self._request(
+            url,
+            method=method,
+            timeout=timeout,
+            user_key=user_key,
+            **kwargs,
+        )
+        if _looks_like_login_required(response.text, str(response.url)):
+            raise LoginRequiredError(
+                "自动重新登录失败，请在私聊使用 /esj l 邮箱 密码 重新登录。"
+            )
+        logger.info(
+            f"[ESJ] login refresh succeeded: operation={operation}, "
+            f"scope={_hash_for_log(scope)}"
+        )
+        return response
+
+    async def _refresh_login(self, user_key: str) -> None:
+        scope = self._client_scope(user_key)
+        lock = self._login_lock(scope)
+        async with lock:
+            if await self.validate_cookie(user_key):
+                return
+            try:
+                await self.login(user_key=user_key)
+            except Exception as exc:
+                raise LoginRequiredError(
+                    "登录态已失效，且自动重新登录失败。请在私聊使用 /esj l 邮箱 密码 重新登录。"
+                ) from exc
+
     async def _request_following_safe_redirects(
         self,
         client: httpx.AsyncClient,
@@ -605,13 +697,18 @@ class EsjzoneDownloadService:
             if not isinstance(data, list):
                 return
             loaded = 0
+            valid_records: list[dict[str, Any]] = []
             for cookie in data:
                 if not isinstance(cookie, dict):
                     continue
                 if not _is_allowed_cookie_record(cookie):
                     continue
                 client.cookies.jar.set_cookie(_cookie_from_record(cookie))
+                valid_records.append(cookie)
                 loaded += 1
+            if len(valid_records) != len(data):
+                _write_json_atomic(cookies_path, valid_records)
+                _restrict_file_permissions(cookies_path)
             logger.info(f"[ESJ] loaded {loaded} cookies")
 
     async def _save_cookies(self, user_key: str | None) -> None:
@@ -646,6 +743,13 @@ class EsjzoneDownloadService:
         if lock is None:
             lock = asyncio.Lock()
             self._cookie_locks[scope] = lock
+        return lock
+
+    def _login_lock(self, scope: str) -> asyncio.Lock:
+        lock = self._login_locks.get(scope)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._login_locks[scope] = lock
         return lock
 
     def _select_chapters(
@@ -1126,6 +1230,46 @@ def _is_allowed_cookie_values(domain: str, path: str, expires: Any) -> bool:
     except (TypeError, ValueError):
         return False
     return True
+
+
+def _looks_like_login_required(html_text: str, url: str = "") -> bool:
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        parsed = None
+    path = parsed.path.lower() if parsed else ""
+    if path in {"/login", "/my/login"} or path.endswith("/my/login"):
+        return True
+
+    snippet = html_text[:20000].lower()
+    redirect_markers = (
+        "window.location.href='/my/login';",
+        'window.location.href="/my/login";',
+        "window.location='/my/login';",
+        'window.location="/my/login";',
+    )
+    if any(marker in snippet for marker in redirect_markers):
+        return True
+    if "mem_login.php" in snippet and (
+        'name="pwd"' in snippet or "name='pwd'" in snippet
+    ):
+        return True
+
+    soup = BeautifulSoup(html_text, "html.parser")
+    login_form = soup.find(
+        "form",
+        action=lambda value: bool(value and "mem_login.php" in str(value).lower()),
+    )
+    if login_form is not None:
+        return True
+    return bool(
+        soup.select_one("input[name='email']") and soup.select_one("input[name='pwd']")
+    )
+
+
+def _can_retry_book_after_login(exc: ValueError) -> bool:
+    message = str(exc)
+    return "书籍标题" in message or "未解析到章节列表" in message
 
 
 def _cookie_to_record(cookie: Any) -> dict[str, Any]:

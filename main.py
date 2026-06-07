@@ -338,7 +338,9 @@ class EsjzoneDownloaderPlugin(Star):
                 user_key=self._user_key(event),
             )
             if not novels:
-                yield event.plain_result("收藏列表为空，或当前登录状态无效。")
+                yield event.plain_result(
+                    "收藏列表为空。若登录态已失效，请在私聊使用 /esj l 邮箱 密码 重新登录。"
+                )
                 return
             nodes = [
                 self._node(
